@@ -1,0 +1,17 @@
+.DS_Store
+.idea/
+.vscode/
+
+.gocache/
+
+bin/
+dist/
+/vigil
+
+node_modules/
+coverage/
+
+vigil-data/
+
+web/dist/*
+!web/dist/.gitkeep
