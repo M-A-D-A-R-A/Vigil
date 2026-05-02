@@ -1,0 +1,432 @@
+{
+  "info": {
+    "name": "Vigil V1",
+    "_postman_id": "5a1f4b8e-2d8c-4e94-9b8d-7f0d7a6c1001",
+    "description": "Postman collection for Vigil V1 project management, ingest, and query APIs.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080"
+    },
+    {
+      "key": "projectName",
+      "value": "postman-demo"
+    },
+    {
+      "key": "projectId",
+      "value": ""
+    },
+    {
+      "key": "ingestKey",
+      "value": ""
+    },
+    {
+      "key": "from",
+      "value": ""
+    },
+    {
+      "key": "to",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Get Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "health"
+              ]
+            },
+            "description": "Returns service status, sync state, and retention status."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Projects",
+      "item": [
+        {
+          "name": "Create Project",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json.project && json.project.id) {",
+                  "  pm.collectionVariables.set('projectId', json.project.id);",
+                  "}",
+                  "if (json.ingest_key) {",
+                  "  pm.collectionVariables.set('ingestKey', json.ingest_key);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{projectName}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/projects",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "projects"
+              ]
+            },
+            "description": "Creates a project. Test script stores projectId and ingestKey into collection variables."
+          },
+          "response": []
+        },
+        {
+          "name": "List Projects",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/projects",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "projects"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Regenerate Project Key",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json.project && json.project.id) {",
+                  "  pm.collectionVariables.set('projectId', json.project.id);",
+                  "}",
+                  "if (json.ingest_key) {",
+                  "  pm.collectionVariables.set('ingestKey', json.ingest_key);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/projects/{{projectId}}/keys/regenerate",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "projects",
+                "{{projectId}}",
+                "keys",
+                "regenerate"
+              ]
+            },
+            "description": "Rotates the ingest key for the current projectId. Test script updates ingestKey."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Ingest",
+      "item": [
+        {
+          "name": "Ingest Log Event",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ingestKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"schema_version\": 1,\n  \"project_id\": \"{{projectId}}\",\n  \"kind\": \"log\",\n  \"ts\": \"{{$isoTimestamp}}\",\n  \"source\": \"postman\",\n  \"level\": \"info\",\n  \"name\": \"hello.vigil.log\",\n  \"attrs\": {\n    \"route\": \"/health\",\n    \"region\": \"local\"\n  },\n  \"body\": {\n    \"message\": \"hello from Postman log\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/ingest",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "ingest"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Ingest Trace Event",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ingestKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"schema_version\": 1,\n  \"project_id\": \"{{projectId}}\",\n  \"kind\": \"trace\",\n  \"ts\": \"{{$isoTimestamp}}\",\n  \"source\": \"postman\",\n  \"trace_id\": \"trace-demo-001\",\n  \"span_id\": \"span-demo-001\",\n  \"level\": \"info\",\n  \"name\": \"request.completed\",\n  \"attrs\": {\n    \"method\": \"GET\",\n    \"path\": \"/api/demo\",\n    \"total_tokens\": 42,\n    \"cost_usd\": 0.0021\n  },\n  \"body\": {\n    \"message\": \"trace event from Postman\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/ingest",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "ingest"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Ingest Metric Event",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{ingestKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"schema_version\": 1,\n  \"project_id\": \"{{projectId}}\",\n  \"kind\": \"metric\",\n  \"ts\": \"{{$isoTimestamp}}\",\n  \"source\": \"postman\",\n  \"name\": \"queue.depth\",\n  \"attrs\": {\n    \"value\": 7,\n    \"unit\": \"count\",\n    \"queue\": \"jobs\"\n  },\n  \"body\": {\n    \"message\": \"metric event from Postman\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/ingest",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "ingest"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Queries",
+      "item": [
+        {
+          "name": "Get Logs (Last 5m Variables)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const now = new Date();",
+                  "const from = new Date(Date.now() - 5 * 60 * 1000);",
+                  "pm.collectionVariables.set('to', now.toISOString());",
+                  "pm.collectionVariables.set('from', from.toISOString());"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/logs?project_id={{projectId}}&from={{from}}&to={{to}}&page=1&limit=50",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "logs"
+              ],
+              "query": [
+                {
+                  "key": "project_id",
+                  "value": "{{projectId}}"
+                },
+                {
+                  "key": "from",
+                  "value": "{{from}}"
+                },
+                {
+                  "key": "to",
+                  "value": "{{to}}"
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "50"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Traces (Last 5m Variables)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const now = new Date();",
+                  "const from = new Date(Date.now() - 5 * 60 * 1000);",
+                  "pm.collectionVariables.set('to', now.toISOString());",
+                  "pm.collectionVariables.set('from', from.toISOString());"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/traces?project_id={{projectId}}&from={{from}}&to={{to}}&page=1&limit=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "traces"
+              ],
+              "query": [
+                {
+                  "key": "project_id",
+                  "value": "{{projectId}}"
+                },
+                {
+                  "key": "from",
+                  "value": "{{from}}"
+                },
+                {
+                  "key": "to",
+                  "value": "{{to}}"
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Get Stats (Last 5m Variables)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const now = new Date();",
+                  "const from = new Date(Date.now() - 5 * 60 * 1000);",
+                  "pm.collectionVariables.set('to', now.toISOString());",
+                  "pm.collectionVariables.set('from', from.toISOString());"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/stats?project_id={{projectId}}&from={{from}}&to={{to}}&page=1&limit=30",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "stats"
+              ],
+              "query": [
+                {
+                  "key": "project_id",
+                  "value": "{{projectId}}"
+                },
+                {
+                  "key": "from",
+                  "value": "{{from}}"
+                },
+                {
+                  "key": "to",
+                  "value": "{{to}}"
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "30"
+                }
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}

@@ -15,11 +15,15 @@ import (
 
 func main() {
 	cfg := config.Load()
-	handler := app.NewHandler(cfg)
+	vigilApp, err := app.New(context.Background(), cfg)
+	if err != nil {
+		log.Fatalf("boot vigil: %v", err)
+	}
+	defer vigilApp.Close()
 
 	server := &http.Server{
 		Addr:    cfg.Addr,
-		Handler: handler,
+		Handler: vigilApp.Handler,
 	}
 
 	go func() {

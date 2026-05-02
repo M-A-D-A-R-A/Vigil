@@ -3,6 +3,7 @@
 .vscode/
 
 .gocache/
+.gomodcache/
 
 bin/
 dist/
@@ -10,6 +11,7 @@ dist/
 
 node_modules/
 coverage/
+ui/node_modules/
 
 vigil-data/
 
