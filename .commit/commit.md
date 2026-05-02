@@ -2,12 +2,7 @@
 
 This file tracks working decisions, repo state, and session notes for Vigil.
 
-This copy lives inside the git-initialized `vigil/` repo so it can be versioned with the codebase.
-
-## Project Locations
-
-- Planning docs root: `/Users/nandoriy/Documents/aiprojects/vigil`
-- App repo root: `/Users/nandoriy/Documents/aiprojects/vigil/vigil`
+This copy lives inside the git-initialized repo so it stays versioned with the codebase.
 
 ## Current Repo Status
 
@@ -23,6 +18,12 @@ This copy lives inside the git-initialized `vigil/` repo so it can be versioned 
 - Explorer UI now has light/dark theme switching, a table-first logs view, and an advanced filter drawer
 - Postman collection and curl reference added for local API testing
 - Filter behavior now has seeded integration coverage
+
+## Git History
+
+- `b8091f4` - `chore: add repo-local commit tracking log`
+- `7a7a8b9` - `feat: ship Vigil v1 observability flow with retention, explorer polish, and test coverage`
+- `ef20e41` - `first commit`
 
 ## Locked Decisions
 
@@ -57,13 +58,13 @@ vigil-data/
 
 ## Implemented Scaffold
 
-- `vigil/cmd/vigil/main.go`
-- `vigil/internal/app/handler.go`
-- `vigil/internal/config/config.go`
-- `vigil/ui/`
-- `vigil/docs/`
-- `vigil/.github/workflows/`
-- `vigil/Makefile`
+- `cmd/vigil/main.go`
+- `internal/app/handler.go`
+- `internal/config/config.go`
+- `ui/`
+- `docs/`
+- `.github/workflows/`
+- `Makefile`
 
 ## Implemented V1 Pieces
 
@@ -92,14 +93,14 @@ vigil-data/
 ### Local backend
 
 ```bash
-cd /Users/nandoriy/Documents/aiprojects/vigil/vigil
+cd .
 GOCACHE=$(pwd)/.gocache go run ./cmd/vigil
 ```
 
 ### Local frontend
 
 ```bash
-cd /Users/nandoriy/Documents/aiprojects/vigil/vigil/ui
+cd ui
 bun install
 bun run dev
 ```
@@ -107,7 +108,7 @@ bun run dev
 ### Built local app
 
 ```bash
-cd /Users/nandoriy/Documents/aiprojects/vigil/vigil
+cd .
 make ui-build
 GOCACHE=$(pwd)/.gocache go run ./cmd/vigil
 ```
@@ -115,7 +116,7 @@ GOCACHE=$(pwd)/.gocache go run ./cmd/vigil
 ### Size checks
 
 ```bash
-cd /Users/nandoriy/Documents/aiprojects/vigil/vigil
+cd .
 make size
 make size-release
 make build-linux-arm64
@@ -180,7 +181,3 @@ make build-linux-arm64
   - `q` is broad text search
   - time range filtering works
   - pagination works
-
-## Suggested Commit
-
-`feat: ship Vigil v1 observability flow with retention, explorer polish, and test coverage`
