@@ -2,7 +2,7 @@ APP_NAME := vigil
 GO_PACKAGES := ./cmd/... ./internal/... ./web/...
 GO_ENV := GOCACHE=$(CURDIR)/.gocache GOMODCACHE=$(CURDIR)/.gomodcache
 
-.PHONY: run build test ui-install ui-dev ui-build size size-release build-linux-arm64 seed-sample
+.PHONY: run build test ui-install ui-dev ui-build size size-release build-linux-arm64 seed-sample bench
 
 run:
 	@env $(GO_ENV) go run ./cmd/vigil
@@ -56,3 +56,6 @@ build-linux-arm64:
 
 seed-sample:
 	@env $(GO_ENV) go run ./cmd/vigil-seed $(ARGS) $(if $(ADDR),-addr $(ADDR),) $(if $(PROJECT_ID),-project-id $(PROJECT_ID),) $(if $(PROJECT_NAME),-project-name $(PROJECT_NAME),) $(if $(INGEST_KEY),-ingest-key $(INGEST_KEY),)
+
+bench:
+	@env $(GO_ENV) go run ./cmd/vigil-bench $(ARGS)

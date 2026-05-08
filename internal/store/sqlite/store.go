@@ -109,6 +109,8 @@ func Open(ctx context.Context, dbPath string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite db: %w", err)
 	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 
 	store := &Store{db: db}
 	if err := store.init(ctx); err != nil {
@@ -538,7 +540,6 @@ func (s *Store) ListLogs(filters query.LogFilters) (*LogList, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list logs: %w", err)
 	}
-	defer rows.Close()
 
 	events := []event.StoredEvent{}
 	for rows.Next() {
@@ -566,6 +567,12 @@ func (s *Store) ListLogs(filters query.LogFilters) (*LogList, error) {
 		ev.Attrs = json.RawMessage(attrs)
 		ev.Body = json.RawMessage(body)
 		events = append(events, ev)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
 	}
 
 	status, err := s.GetSyncStatus()
@@ -608,7 +615,6 @@ func (s *Store) ListTraces(filters query.RangeFilters) (*TraceList, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list traces: %w", err)
 	}
-	defer rows.Close()
 
 	traces := []TraceTimeline{}
 	for rows.Next() {
@@ -616,13 +622,20 @@ func (s *Store) ListTraces(filters query.RangeFilters) (*TraceList, error) {
 		if err := rows.Scan(&timeline.TraceID, &timeline.ProjectID, &timeline.Name, &timeline.StartedAt, &timeline.EndedAt, &timeline.EventCount); err != nil {
 			return nil, err
 		}
+		traces = append(traces, timeline)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
 
+	for i := range traces {
 		eventRows, err := s.db.Query(
 			`SELECT event_id, ts, name, level, source, span_id, attrs_json, body_json
 			 FROM events
 			 WHERE trace_id = ?
 			 ORDER BY ts ASC, received_at ASC`,
-			timeline.TraceID,
+			traces[i].TraceID,
 		)
 		if err != nil {
 			return nil, err
@@ -637,11 +650,15 @@ func (s *Store) ListTraces(filters query.RangeFilters) (*TraceList, error) {
 			}
 			traceEvent.Attrs = json.RawMessage(attrs)
 			traceEvent.Body = json.RawMessage(body)
-			timeline.Events = append(timeline.Events, traceEvent)
+			traces[i].Events = append(traces[i].Events, traceEvent)
 		}
-		eventRows.Close()
-
-		traces = append(traces, timeline)
+		if err := eventRows.Err(); err != nil {
+			eventRows.Close()
+			return nil, err
+		}
+		if err := eventRows.Close(); err != nil {
+			return nil, err
+		}
 	}
 
 	status, err := s.GetSyncStatus()

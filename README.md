@@ -26,6 +26,7 @@ The app starts on `http://localhost:8080`.
 - `make test` - run backend tests for the Go packages in this repo
 - `make ui-build` - build the frontend into `web/dist`
 - `make build` - build the Go binary into `bin/vigil`
+- `make bench` - create a benchmark project, ingest synthetic logs, and time log queries
 - `make size` - print Go binary size, UI bundle size, and combined shipped size
 - `make size-release` - print stripped release binary size, UI bundle size, and combined release size
 - `make build-linux-arm64` - build a Raspberry Pi 4 friendly Linux ARM64 release binary
@@ -60,3 +61,45 @@ Retention works on raw UTC day folders. When a sweep removes expired raw folders
 - `web/dist` - built frontend assets
 - `docs/` - usage and operations docs
 - `test/` - integration, e2e, and fixtures
+
+## Log pipeline benchmark
+
+Run a local isolated benchmark. By default, raw `.ndjson` files are written under
+`./vigil-bench-data/logs/<project_id>/<date>/`.
+
+```sh
+make bench ARGS="-events 5000 -concurrency 16 -query-runs 25"
+```
+
+Benchmark flags:
+
+- `-events` is the total number of generated log events to send.
+- `-concurrency` is the number of parallel ingest workers. For example, `-concurrency 32` means 32 workers send `POST /api/ingest` requests at the same time until all events are sent.
+- `-query-runs` is the number of timed query repetitions after ingest and indexing.
+- `-warmup-runs` is the number of untimed query warmups before measuring.
+- `-wait-timeout` controls how long the benchmark waits for async indexing to catch up.
+- `-request-timeout` controls each HTTP request timeout.
+- `-data-dir` overrides the default repo-local benchmark directory.
+- `-addr` benchmarks an already-running Vigil server instead of starting an isolated local server.
+
+Run the 100k log benchmark and save document-ready output:
+
+```sh
+mkdir -p vigil-bench-data
+make bench ARGS="-events 100000 -concurrency 32 -query-runs 25 -warmup-runs 3 -wait-timeout 5m -request-timeout 60s" | tee vigil-bench-data/benchmark-100000-logs.txt
+```
+
+Compare concurrency levels:
+
+```sh
+make bench ARGS="-events 100000 -concurrency 1 -query-runs 10"
+make bench ARGS="-events 100000 -concurrency 8 -query-runs 10"
+make bench ARGS="-events 100000 -concurrency 32 -query-runs 10"
+make bench ARGS="-events 100000 -concurrency 64 -query-runs 10"
+```
+
+Benchmark a running Vigil server instead:
+
+```sh
+make bench ARGS="-addr http://localhost:8080 -events 5000 -concurrency 16"
+```

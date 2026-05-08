@@ -14,6 +14,8 @@ coverage/
 ui/node_modules/
 
 vigil-data/
+vigil-bench-data/
+vigil-bench-data-failed-*/
 
 web/dist/*
 !web/dist/.gitkeep

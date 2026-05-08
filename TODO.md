@@ -12,10 +12,16 @@
 - [x] Add copy/share filtered URL support.
 - [x] Add result warnings for capped and partial query responses.
 - [x] Add a real retention config surface with day-based pruning, dry-run, and SQLite rebuild.
+- [x] Add a repo-local log benchmark runner with raw `.ndjson`, SQLite, and query timing output.
+- [x] Record the first 100k log API benchmark baseline in `benchmark.md`.
 
 ## Next
 
 - [ ] Add a browser-level first-run and explorer smoke test harness.
+- [ ] Add benchmark coverage for traces and metrics using the same API create / ingest / query flow.
+- [ ] Add a query-while-ingesting benchmark to measure live search latency during bursts.
+- [ ] Add repeated benchmark runs and report min / median / max to reduce one-run noise.
+- [ ] Track indexing lag and storage size as first-class benchmark trend metrics.
 
 ## Later
 
@@ -23,6 +29,8 @@
 - [ ] Add a field sidebar based on discovered `attrs` / `body` keys.
 - [ ] Add a histogram for ingest volume or event volume.
 - [ ] Add saved views / saved filtered links.
+- [ ] Add larger 500k and 1M log benchmark profiles.
+- [ ] Add larger payload body benchmark profiles.
 
 ## Later If Vigil Expands
 

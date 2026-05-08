@@ -68,12 +68,12 @@ func TestWorkerRebuildIndexesRawEvents(t *testing.T) {
 }
 
 func queryLogFilters(projectID string) query.LogFilters {
-	now := time.Now().UTC()
+	ts := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC)
 	return query.LogFilters{
 		RangeFilters: query.RangeFilters{
 			ProjectID: projectID,
-			From:      now.Add(-24 * time.Hour),
-			To:        now.Add(24 * time.Hour),
+			From:      ts.Add(-time.Hour),
+			To:        ts.Add(time.Hour),
 			Page:      1,
 			Limit:     10,
 		},
