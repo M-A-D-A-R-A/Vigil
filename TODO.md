@@ -14,6 +14,7 @@
 - [x] Add a real retention config surface with day-based pruning, dry-run, and SQLite rebuild.
 - [x] Add a repo-local log benchmark runner with raw `.ndjson`, SQLite, and query timing output.
 - [x] Record the first 100k log API benchmark baseline in `benchmark.md`.
+- [x] Batch SQLite index writes to reduce 100k log index catch-up from 27.874s to 270.5ms.
 
 ## Next
 

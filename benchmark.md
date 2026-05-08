@@ -106,3 +106,52 @@ The main watch item is async indexing lag:
 ## Notes
 
 The first 100k attempt exposed a benchmark-client problem: the client was not draining ingest responses, so short-lived connections exhausted local TCP ports and produced `can't assign requested address`. The benchmark now reuses HTTP connections properly.
+
+## 100k Log API Benchmark After Batched SQLite Indexing
+
+Run date: 2026-05-08
+
+Command:
+
+```sh
+make bench ARGS="-data-dir vigil-bench-data-batched -events 100000 -concurrency 32 -query-runs 25 -warmup-runs 3 -wait-timeout 5m -request-timeout 60s" | tee vigil-bench-data-batched-100000-logs.txt
+```
+
+Result:
+
+```text
+Benchmark project: bench-20260508-150020-26293 (proj_ac1f04655c40b8cba7c115b8)
+Server: http://127.0.0.1:51873
+Data dir: vigil-bench-data-batched
+Raw logs dir: vigil-bench-data-batched/logs/proj_ac1f04655c40b8cba7c115b8/2026-05-08
+SQLite db: vigil-bench-data-batched/index/vigil.db
+
+Ingesting 100000 log events with concurrency 32...
+Ingest summary:
+  successful: 100000/100000
+  elapsed:    20.248s
+  throughput: 4938.7 events/s, 1.87 MiB/s
+  latency:    avg=6.5ms p50=4ms p95=23.4ms p99=45.9ms max=85.6ms
+Waiting for async index catch-up...
+Index catch-up: 270.5ms, indexed total=100000
+Storage summary:
+  request payload: 39778890 bytes (37.94 MiB)
+  raw ndjson:      5 files, 48467748 bytes (46.22 MiB)
+  sqlite db:       116011008 bytes (110.64 MiB)
+  sqlite index:    122376248 bytes (116.71 MiB)
+  data dir total:  170843996 bytes (162.93 MiB)
+Query summary:
+  all recent logs    total=100000 avg=13.3ms   p50=13.1ms   p95=14.2ms   p99=14.9ms   max=15.8ms   ok
+  level=error        total=5000   avg=57.7ms   p50=56.7ms   p95=61.1ms   p99=61.8ms   max=62.8ms   ok
+  q=checkout         total=25000  avg=232.2ms  p50=232.3ms  p95=237.2ms  p99=238.8ms  max=287.1ms  ok
+  name=auth.failed   total=2000   avg=58.2ms   p50=58.5ms   p95=59.9ms   p99=60ms     max=60.2ms   ok
+```
+
+Before/after readout:
+
+- Index catch-up improved from 27.874s to 270.5ms.
+- Total time until all 100k logs were queryable improved from about 44.46s to about 20.52s.
+- Ingest stayed lossless at 100,000/100,000 accepted events.
+- Ingest p95 regressed from 12ms to 23.4ms, likely because the indexer now keeps up during ingestion instead of leaving most work for after ingestion.
+- Full-text search p95 improved from 251.6ms to 237.2ms.
+- Storage stayed essentially flat: 162.13 MiB before, 162.93 MiB after.

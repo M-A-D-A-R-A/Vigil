@@ -10,6 +10,11 @@ import (
 	"vigil/internal/store/sqlite"
 )
 
+const (
+	batchSize    = 500
+	batchMaxWait = 100 * time.Millisecond
+)
+
 type Worker struct {
 	store   *sqlite.Store
 	raw     *raw.Store
@@ -23,6 +28,11 @@ type rebuildRequest struct {
 	ctx   context.Context
 	reset bool
 	done  chan error
+}
+
+type drainResult struct {
+	stop    bool
+	rebuild *rebuildRequest
 }
 
 func NewWorker(store *sqlite.Store, rawStore *raw.Store) *Worker {
@@ -98,18 +108,76 @@ func (w *Worker) run() {
 	for {
 		select {
 		case <-w.stop:
+			w.flushRemainingQueue()
 			return
 		case ev := <-w.queue:
-			if _, err := w.store.UpsertEvent(ev); err != nil {
-				_ = w.store.MarkWorkerError(err)
-				w.ScheduleRebuild()
+			batch, result := w.drainBatch(ev)
+			w.writeBatch(batch)
+			if result.rebuild != nil {
+				w.handleRebuild(*result.rebuild)
+			}
+			if result.stop {
+				w.flushRemainingQueue()
+				return
 			}
 		case request := <-w.rebuild:
-			err := w.performRebuild(request)
-			if request.done != nil {
-				request.done <- err
-			}
+			w.handleRebuild(request)
 		}
+	}
+}
+
+func (w *Worker) drainBatch(first *event.StoredEvent) ([]*event.StoredEvent, drainResult) {
+	batch := []*event.StoredEvent{first}
+	timer := time.NewTimer(batchMaxWait)
+	defer timer.Stop()
+
+	for len(batch) < batchSize {
+		select {
+		case ev := <-w.queue:
+			batch = append(batch, ev)
+		case request := <-w.rebuild:
+			return batch, drainResult{rebuild: &request}
+		case <-w.stop:
+			return batch, drainResult{stop: true}
+		case <-timer.C:
+			return batch, drainResult{}
+		}
+	}
+
+	return batch, drainResult{}
+}
+
+func (w *Worker) writeBatch(batch []*event.StoredEvent) {
+	if len(batch) == 0 {
+		return
+	}
+	if _, _, err := w.store.UpsertEvents(batch); err != nil {
+		_ = w.store.MarkWorkerError(err)
+		w.ScheduleRebuild()
+	}
+}
+
+func (w *Worker) flushRemainingQueue() {
+	batch := make([]*event.StoredEvent, 0, batchSize)
+	for {
+		select {
+		case ev := <-w.queue:
+			batch = append(batch, ev)
+			if len(batch) >= batchSize {
+				w.writeBatch(batch)
+				batch = make([]*event.StoredEvent, 0, batchSize)
+			}
+		default:
+			w.writeBatch(batch)
+			return
+		}
+	}
+}
+
+func (w *Worker) handleRebuild(request rebuildRequest) {
+	err := w.performRebuild(request)
+	if request.done != nil {
+		request.done <- err
 	}
 }
 
@@ -129,14 +197,33 @@ func (w *Worker) performRebuild(request rebuildRequest) error {
 	}
 
 	latestReceivedAt := ""
+	batch := make([]*event.StoredEvent, 0, batchSize)
+	flush := func() error {
+		if len(batch) == 0 {
+			return nil
+		}
+		if _, _, err := w.store.UpsertEvents(batch); err != nil {
+			return err
+		}
+		batch = make([]*event.StoredEvent, 0, batchSize)
+		return nil
+	}
+
 	err := w.raw.Replay(ctx, func(ev *event.StoredEvent) error {
 		if ev.ReceivedAt > latestReceivedAt {
 			latestReceivedAt = ev.ReceivedAt
 		}
-		_, err := w.store.UpsertEvent(ev)
-		return err
+		batch = append(batch, ev)
+		if len(batch) >= batchSize {
+			return flush()
+		}
+		return nil
 	})
 	if err != nil {
+		_ = w.store.MarkWorkerError(err)
+		return err
+	}
+	if err := flush(); err != nil {
 		_ = w.store.MarkWorkerError(err)
 		return err
 	}

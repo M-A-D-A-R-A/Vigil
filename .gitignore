@@ -17,6 +17,8 @@ ui/node_modules/
 vigil-data/
 vigil-bench-data/
 vigil-bench-data-failed-*/
+vigil-bench-data-batched*/
+vigil-bench-data-batched-*.txt
 
 web/dist/*
 !web/dist/placeholder.txt

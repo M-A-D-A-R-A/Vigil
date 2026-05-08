@@ -295,113 +295,165 @@ func (s *Store) MarkLatestIngested(receivedAt string) error {
 }
 
 func (s *Store) UpsertEvent(ev *event.StoredEvent) (bool, error) {
+	inserted, _, err := s.UpsertEvents([]*event.StoredEvent{ev})
+	return inserted == 1, err
+}
+
+func (s *Store) UpsertEvents(events []*event.StoredEvent) (int, string, error) {
+	if len(events) == 0 {
+		return 0, "", nil
+	}
+
 	tx, err := s.db.Begin()
 	if err != nil {
-		return false, err
+		return 0, "", err
 	}
 	defer tx.Rollback()
 
-	result, err := tx.Exec(
+	insertEvent, err := tx.Prepare(
 		`INSERT OR IGNORE INTO events(
 			event_id, schema_version, project_id, kind, ts, received_at, source, trace_id, span_id, level, name, attrs_json, body_json
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		ev.EventID,
-		ev.SchemaVersion,
-		ev.ProjectID,
-		string(ev.Kind),
-		ev.TS,
-		ev.ReceivedAt,
-		ev.Source,
-		ev.TraceID,
-		ev.SpanID,
-		ev.Level,
-		ev.Name,
-		string(ev.Attrs),
-		string(ev.Body),
 	)
 	if err != nil {
-		return false, fmt.Errorf("insert event: %w", err)
+		return 0, "", fmt.Errorf("prepare insert event: %w", err)
 	}
+	defer insertEvent.Close()
 
-	rowsAffected, _ := result.RowsAffected()
-	if rowsAffected == 0 {
-		return false, tx.Commit()
-	}
-
-	if _, err := tx.Exec(
+	insertFTS, err := tx.Prepare(
 		`INSERT INTO events_fts(event_id, name, source, level, attrs_text, body_text)
 		 VALUES (?, ?, ?, ?, ?, ?)`,
-		ev.EventID,
-		ev.Name,
-		ev.Source,
-		ev.Level,
-		event.SearchText(ev.Attrs),
-		event.SearchText(ev.Body),
-	); err != nil {
-		return false, fmt.Errorf("insert fts row: %w", err)
+	)
+	if err != nil {
+		return 0, "", fmt.Errorf("prepare insert fts row: %w", err)
 	}
+	defer insertFTS.Close()
 
-	if ev.TraceID != "" {
-		if _, err := tx.Exec(
-			`INSERT INTO trace_summaries(trace_id, project_id, name, started_at, ended_at, event_count)
-			 VALUES (?, ?, ?, ?, ?, 1)
-			 ON CONFLICT(trace_id) DO UPDATE SET
-			 	project_id = excluded.project_id,
-			 	name = CASE
-			 		WHEN trace_summaries.name = '' THEN excluded.name
-			 		ELSE trace_summaries.name
-			 	END,
-			 	started_at = MIN(trace_summaries.started_at, excluded.started_at),
-			 	ended_at = MAX(trace_summaries.ended_at, excluded.ended_at),
-			 	event_count = trace_summaries.event_count + 1`,
-			ev.TraceID,
-			ev.ProjectID,
-			ev.Name,
-			ev.TS,
-			ev.TS,
-		); err != nil {
-			return false, fmt.Errorf("upsert trace summary: %w", err)
-		}
+	upsertTrace, err := tx.Prepare(
+		`INSERT INTO trace_summaries(trace_id, project_id, name, started_at, ended_at, event_count)
+		 VALUES (?, ?, ?, ?, ?, 1)
+		 ON CONFLICT(trace_id) DO UPDATE SET
+			project_id = excluded.project_id,
+			name = CASE
+				WHEN trace_summaries.name = '' THEN excluded.name
+				ELSE trace_summaries.name
+			END,
+			started_at = MIN(trace_summaries.started_at, excluded.started_at),
+			ended_at = MAX(trace_summaries.ended_at, excluded.ended_at),
+			event_count = trace_summaries.event_count + 1`,
+	)
+	if err != nil {
+		return 0, "", fmt.Errorf("prepare upsert trace summary: %w", err)
 	}
+	defer upsertTrace.Close()
 
-	tokens, cost := event.ExtractUsageTotals(ev)
-	if _, err := tx.Exec(
+	upsertStats, err := tx.Prepare(
 		`INSERT INTO stats_daily(day, project_id, kind, level, event_count, token_total, cost_total)
 		 VALUES (?, ?, ?, ?, 1, ?, ?)
 		 ON CONFLICT(day, project_id, kind, level) DO UPDATE SET
 		 	event_count = stats_daily.event_count + 1,
 		 	token_total = stats_daily.token_total + excluded.token_total,
 		 	cost_total = stats_daily.cost_total + excluded.cost_total`,
-		event.TimestampDay(ev.TS),
-		ev.ProjectID,
-		string(ev.Kind),
-		ev.Level,
-		tokens,
-		cost,
-	); err != nil {
-		return false, fmt.Errorf("upsert daily stats: %w", err)
+	)
+	if err != nil {
+		return 0, "", fmt.Errorf("prepare upsert daily stats: %w", err)
+	}
+	defer upsertStats.Close()
+
+	inserted := 0
+	latestReceivedAt := ""
+	for _, ev := range events {
+		if ev == nil {
+			continue
+		}
+
+		result, err := insertEvent.Exec(
+			ev.EventID,
+			ev.SchemaVersion,
+			ev.ProjectID,
+			string(ev.Kind),
+			ev.TS,
+			ev.ReceivedAt,
+			ev.Source,
+			ev.TraceID,
+			ev.SpanID,
+			ev.Level,
+			ev.Name,
+			string(ev.Attrs),
+			string(ev.Body),
+		)
+		if err != nil {
+			return 0, "", fmt.Errorf("insert event: %w", err)
+		}
+
+		rowsAffected, _ := result.RowsAffected()
+		if rowsAffected == 0 {
+			continue
+		}
+
+		inserted++
+		if ev.ReceivedAt > latestReceivedAt {
+			latestReceivedAt = ev.ReceivedAt
+		}
+
+		if _, err := insertFTS.Exec(
+			ev.EventID,
+			ev.Name,
+			ev.Source,
+			ev.Level,
+			event.SearchText(ev.Attrs),
+			event.SearchText(ev.Body),
+		); err != nil {
+			return 0, "", fmt.Errorf("insert fts row: %w", err)
+		}
+
+		if ev.TraceID != "" {
+			if _, err := upsertTrace.Exec(
+				ev.TraceID,
+				ev.ProjectID,
+				ev.Name,
+				ev.TS,
+				ev.TS,
+			); err != nil {
+				return 0, "", fmt.Errorf("upsert trace summary: %w", err)
+			}
+		}
+
+		tokens, cost := event.ExtractUsageTotals(ev)
+		if _, err := upsertStats.Exec(
+			event.TimestampDay(ev.TS),
+			ev.ProjectID,
+			string(ev.Kind),
+			ev.Level,
+			tokens,
+			cost,
+		); err != nil {
+			return 0, "", fmt.Errorf("upsert daily stats: %w", err)
+		}
 	}
 
-	if _, err := tx.Exec(
-		`UPDATE worker_state
-		 SET latest_indexed_at = CASE
-		 	WHEN latest_indexed_at = '' OR latest_indexed_at < ? THEN ?
-		 	ELSE latest_indexed_at
-		 END,
-		 last_error = '',
-		 updated_at = ?
-		 WHERE id = 1`,
-		ev.ReceivedAt,
-		ev.ReceivedAt,
-		time.Now().UTC().Format(time.RFC3339Nano),
-	); err != nil {
-		return false, fmt.Errorf("update worker state: %w", err)
+	if latestReceivedAt != "" {
+		if _, err := tx.Exec(
+			`UPDATE worker_state
+			 SET latest_indexed_at = CASE
+				WHEN latest_indexed_at = '' OR latest_indexed_at < ? THEN ?
+				ELSE latest_indexed_at
+			 END,
+			 last_error = '',
+			 updated_at = ?
+			 WHERE id = 1`,
+			latestReceivedAt,
+			latestReceivedAt,
+			time.Now().UTC().Format(time.RFC3339Nano),
+		); err != nil {
+			return 0, "", fmt.Errorf("update worker state: %w", err)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		return false, err
+		return 0, "", err
 	}
-	return true, nil
+	return inserted, latestReceivedAt, nil
 }
 
 func (s *Store) MarkRebuildSuccess(now time.Time) error {
