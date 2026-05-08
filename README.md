@@ -64,6 +64,14 @@ Retention works on raw UTC day folders. When a sweep removes expired raw folders
 
 ## Log pipeline benchmark
 
+Latest baseline: Vigil accepted 100,000 log events through the public API with
+32 parallel ingest workers, no event loss, about 6,029 events/sec ingest
+throughput, 12ms ingest p95 latency, and 13.4ms p95 for recent log listing.
+Full-text search was the slowest measured query at 251.6ms p95. Async indexing
+caught up 27.874s after ingest finished, so all 100k logs were queryable after
+about 44.46s total. See [benchmark.md](benchmark.md) for the full run output,
+file sizes, and readout.
+
 Run a local isolated benchmark. By default, raw `.ndjson` files are written under
 `./vigil-bench-data/logs/<project_id>/<date>/`.
 

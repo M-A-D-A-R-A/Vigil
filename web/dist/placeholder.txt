@@ -1,0 +1,1 @@
+Build the UI with `make ui-build` to replace this placeholder with production assets.
