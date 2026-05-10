@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -10,10 +11,29 @@ import (
 	"time"
 
 	"vigil/internal/app"
+	"vigil/internal/cli"
 	"vigil/internal/config"
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] != "serve" {
+		if err := (cli.Runner{
+			Out: os.Stdout,
+			Err: os.Stderr,
+		}).Run(context.Background(), os.Args[1:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) > 2 {
+		fmt.Fprintf(os.Stderr, "serve does not accept arguments\n")
+		os.Exit(1)
+	}
+	runServer()
+}
+
+func runServer() {
 	cfg := config.Load()
 	vigilApp, err := app.New(context.Background(), cfg)
 	if err != nil {

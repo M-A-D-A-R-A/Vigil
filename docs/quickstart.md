@@ -10,6 +10,22 @@
 8. Copy the one-time ingest key.
 9. Paste the generated `curl` example to send your first event.
 
+CLI setup path:
+
+1. Terminal 1: `make run`
+2. Terminal 2: `make build`
+3. Run `bin/vigil init -project my-app`
+4. Run the printed ingest command
+5. Use `bin/vigil status` to confirm the active project
+
+Install path:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/M-A-D-A-R-A/Vigil/main/scripts/install.sh | sh
+vigil serve
+vigil init -project my-app
+```
+
 Optional retention setup:
 
 1. Export `VIGIL_RETENTION_ENABLED=true`

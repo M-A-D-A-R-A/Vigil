@@ -26,7 +26,7 @@ The app starts on `http://localhost:8080`.
 - `make test` - run backend tests for the Go packages in this repo
 - `make smoke` - build the UI and run the browser first-run/explorer smoke test
 - `make ui-build` - build the frontend into `web/dist`
-- `make build` - build the Go binary into `bin/vigil`
+- `make build` - build the single Vigil binary into `bin/vigil`
 - `make bench` - create a benchmark project, ingest synthetic logs, and time log queries
 - `make size` - print Go binary size, UI bundle size, and combined shipped size
 - `make size-release` - print stripped release binary size, UI bundle size, and combined release size
@@ -40,6 +40,53 @@ The app starts on `http://localhost:8080`.
 4. Copy the one-time ingest key
 5. Send the generated `curl` example
 6. Watch the event appear in Logs, Traces, and Stats
+
+## CLI setup
+
+Install from the latest GitHub Release:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/M-A-D-A-R-A/Vigil/main/scripts/install.sh | sh
+```
+
+Or build locally:
+
+```sh
+make build
+```
+
+Start the server:
+
+```sh
+bin/vigil
+```
+
+Create or select a project, store the active local config, and write SDK-ready values into this project’s `.env`:
+
+```sh
+bin/vigil init -project my-app
+```
+
+Useful CLI commands:
+
+- `bin/vigil serve` - explicitly start the server
+- `bin/vigil status` - show the active server, project, key state, and health
+- `bin/vigil projects` - list projects and mark the active one
+- `bin/vigil use PROJECT_ID_OR_NAME` - switch active project
+- `bin/vigil key rotate` - create and store a fresh ingest key for the active project
+- `bin/vigil ingest-command` - print a ready-to-run curl command for the active project
+
+The CLI defaults to `http://localhost:8080`, then reuses the saved server URL. It stores config at your platform config path by default. Set `VIGIL_CONFIG_PATH` to use a specific config file.
+
+`vigil init` writes only the managed SDK block below and preserves the rest of your `.env`:
+
+```env
+# BEGIN VIGIL
+VIGIL_BASE_URL=http://localhost:8080
+VIGIL_PROJECT_ID=proj_...
+VIGIL_INGEST_KEY=vigil_...
+# END VIGIL
+```
 
 ## Browser smoke test
 

@@ -1,14 +1,60 @@
 name: release
 
 on:
+  push:
+    tags:
+      - "v*"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish, for example v0.1.0"
+        required: true
+
+permissions:
+  contents: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: go build ./cmd/vigil
+      - uses: oven-sh/setup-bun@v2
+
+      - run: make ui-install
+      - run: make ui-build
+
+      - name: Build release artifacts
+        run: |
+          set -eu
+          rm -rf dist/release
+          mkdir -p dist/release
+
+          for target in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64; do
+            goos="${target%/*}"
+            goarch="${target#*/}"
+            asset="vigil_${RELEASE_TAG}_${goos}_${goarch}"
+            mkdir -p "dist/release/${asset}"
+            CGO_ENABLED=0 GOOS="${goos}" GOARCH="${goarch}" go build -ldflags="-s -w" -o "dist/release/${asset}/vigil" ./cmd/vigil
+            tar -C "dist/release/${asset}" -czf "dist/release/${asset}.tar.gz" vigil
+            rm -rf "dist/release/${asset}"
+          done
+
+          cd dist/release
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum vigil_*.tar.gz > checksums.txt
+          else
+            shasum -a 256 vigil_*.tar.gz > checksums.txt
+          fi
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          files: |
+            dist/release/vigil_*.tar.gz
+            dist/release/checksums.txt
