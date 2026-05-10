@@ -14,6 +14,11 @@ dist/
 node_modules/
 coverage/
 ui/node_modules/
+__pycache__/
+*.py[cod]
+*.egg-info/
+sdk/python/dist/
+sdk/python/build/
 
 vigil-data/
 vigil-bench-data/

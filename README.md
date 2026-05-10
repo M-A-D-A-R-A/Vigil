@@ -63,6 +63,25 @@ VIGIL_INGEST_KEY=vigil_...
 
 Use `vigil init -env-file PATH` to write a different env file. Server runtime settings, such as retention and data directories, stay in the server environment.
 
+## Python SDK
+
+The Python SDK is published on PyPI as `vigil-observability`. It reads the env values from `vigil init` and sends events to Vigil:
+
+```sh
+pip install vigil-observability
+```
+
+Package page: <https://pypi.org/project/vigil-observability/>
+
+```python
+from vigil_sdk import VigilClient
+
+vigil = VigilClient.from_env()
+vigil.log("request.completed", message="request completed", attrs={"route": "/health"})
+vigil.trace("llm.completed", trace_id="trace-123", attrs={"total_tokens": 42})
+vigil.metric("queue.depth", value=7, unit="count", attrs={"queue": "jobs"})
+```
+
 ## Data Storage
 
 `vigil init` does not choose where log files live. It configures your app to send data to a running Vigil server. The server owns the on-disk data directory.
@@ -103,6 +122,7 @@ Useful development commands:
 - `make run` - run the Go server locally
 - `make ui-dev` - start the Vite dev server
 - `make test` - run backend tests
+- `make test-python` - run Python SDK tests
 - `make smoke` - build the UI and run the browser first-run/explorer smoke test
 - `make bench` - ingest synthetic logs and time log queries
 - `make size-release` - print stripped release binary size plus embedded UI size
@@ -145,6 +165,7 @@ make bench ARGS="-events 5000 -concurrency 16 -query-runs 25"
 - `cmd/vigil` - binary entrypoint
 - `internal/` - backend application code
 - `ui/` - React + TypeScript + Vite frontend
+- `sdk/python` - Python SDK package
 - `web/dist` - built frontend assets
 - `docs/` - usage and operations docs
 - `test/` - integration, e2e, and fixtures

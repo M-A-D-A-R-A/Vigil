@@ -18,11 +18,12 @@
 - [x] Add a browser-level first-run and explorer smoke test harness.
 - [x] Add terminal-based config and onboarding for local setup: `vigil init`, create/select project, store server URL, write app `.env`, print ingest command, and make the active project obvious.
 - [x] Add release tarballs and an install script for installing `vigil` from GitHub Releases.
+- [x] Add a first-pass Python SDK for logs, traces, metrics, project setup, and env-based app configuration.
 
 ## Next
 
-- [ ] Add a Python SDK for ingesting logs, traces, metrics, and configuring projects from Python apps.
 - [ ] Add a TypeScript SDK for ingesting logs, traces, metrics, and configuring projects from Node/browser-adjacent apps.
+- [ ] Add OpenTelemetry/OTLP support after the first direct SDKs: server OTLP ingest endpoints plus SDK helpers for Python and TypeScript.
 - [ ] Add a first-pass `vigil ask` / answer layer for natural-language questions over logs, traces, stats, and event context.
 - [ ] Add benchmark coverage for traces and metrics using the same API create / ingest / query flow.
 - [ ] Add a query-while-ingesting benchmark to measure live search latency during bursts.

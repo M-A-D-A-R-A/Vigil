@@ -3,7 +3,7 @@ GO_PACKAGES := ./cmd/... ./internal/... ./web/...
 GO_ENV := GOCACHE=$(CURDIR)/.gocache GOMODCACHE=$(CURDIR)/.gomodcache GOPATH=$(CURDIR)/.gopath
 UI_RUNNER := $(shell command -v bun >/dev/null 2>&1 && echo bun || echo npm)
 
-.PHONY: run build test smoke ui-install ui-dev ui-build size size-release build-linux-arm64 seed-sample bench
+.PHONY: run build test test-python smoke ui-install ui-dev ui-build size size-release build-linux-arm64 seed-sample bench
 
 run:
 	@env $(GO_ENV) go run ./cmd/vigil
@@ -14,6 +14,9 @@ build:
 
 test:
 	@env $(GO_ENV) go test $(GO_PACKAGES)
+
+test-python:
+	@PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=$(CURDIR)/sdk/python/src python3 -m unittest discover -s sdk/python/tests
 
 smoke: ui-build
 	@env $(GO_ENV) go test -count=1 -tags smoke ./test/smoke
