@@ -24,6 +24,7 @@ The app starts on `http://localhost:8080`.
 - `make run` - run the Go server locally
 - `make ui-dev` - start the Vite dev server
 - `make test` - run backend tests for the Go packages in this repo
+- `make smoke` - build the UI and run the browser first-run/explorer smoke test
 - `make ui-build` - build the frontend into `web/dist`
 - `make build` - build the Go binary into `bin/vigil`
 - `make bench` - create a benchmark project, ingest synthetic logs, and time log queries
@@ -39,6 +40,16 @@ The app starts on `http://localhost:8080`.
 4. Copy the one-time ingest key
 5. Send the generated `curl` example
 6. Watch the event appear in Logs, Traces, and Stats
+
+## Browser smoke test
+
+Run the browser-level first-run and explorer smoke test:
+
+```sh
+make smoke
+```
+
+The smoke target builds the UI, starts Vigil against isolated temporary data, launches headless Chrome, creates a project through the UI, ingests a trace event, and verifies Logs, Traces, and Stats in the explorer. Set `VIGIL_CHROME_PATH` if Chrome is installed somewhere unusual.
 
 ## Retention
 

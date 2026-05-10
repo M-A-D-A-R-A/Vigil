@@ -4,6 +4,7 @@
 
 .gocache/
 .gomodcache/
+.gopath/
 
 bin/
 dist/

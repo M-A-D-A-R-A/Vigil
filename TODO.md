@@ -15,10 +15,12 @@
 - [x] Add a repo-local log benchmark runner with raw `.ndjson`, SQLite, and query timing output.
 - [x] Record the first 100k log API benchmark baseline in `benchmark.md`.
 - [x] Batch SQLite index writes to reduce 100k log index catch-up from 27.874s to 270.5ms.
+- [x] Add a browser-level first-run and explorer smoke test harness.
 
 ## Next
 
-- [ ] Add a browser-level first-run and explorer smoke test harness.
+- [ ] Add terminal-based config and onboarding for local setup: create/select project, store server URL, print ingest command, and make the active project obvious.
+- [ ] Add a first-pass `vigil ask` / answer layer for natural-language questions over logs, traces, stats, and event context.
 - [ ] Add benchmark coverage for traces and metrics using the same API create / ingest / query flow.
 - [ ] Add a query-while-ingesting benchmark to measure live search latency during bursts.
 - [ ] Add repeated benchmark runs and report min / median / max to reduce one-run noise.
@@ -32,16 +34,17 @@
 - [ ] Add saved views / saved filtered links.
 - [ ] Add larger 500k and 1M log benchmark profiles.
 - [ ] Add larger payload body benchmark profiles.
+- [ ] Add an evidence-first answer UI that shows the query answer plus the matching events, traces, and time window behind it.
 
 ## Later If Vigil Expands
 
 - [ ] Add auth and multi-user RBAC.
 - [ ] Add teams / sources abstractions.
 - [ ] Add alerts and webhooks.
-- [ ] Add a CLI.
+- [ ] Expand the CLI beyond local config into day-to-day project, ingest, export, and admin commands.
 - [ ] Add query cancellation and export jobs.
 - [ ] Add provisioning flows.
-- [ ] Add AI query assist.
+- [ ] Add model-provider configuration for the `vigil ask` layer once the local retrieval workflow is proven.
 
 ## Not Now
 

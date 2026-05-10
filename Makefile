@@ -1,8 +1,9 @@
 APP_NAME := vigil
 GO_PACKAGES := ./cmd/... ./internal/... ./web/...
-GO_ENV := GOCACHE=$(CURDIR)/.gocache GOMODCACHE=$(CURDIR)/.gomodcache
+GO_ENV := GOCACHE=$(CURDIR)/.gocache GOMODCACHE=$(CURDIR)/.gomodcache GOPATH=$(CURDIR)/.gopath
+UI_RUNNER := $(shell command -v bun >/dev/null 2>&1 && echo bun || echo npm)
 
-.PHONY: run build test ui-install ui-dev ui-build size size-release build-linux-arm64 seed-sample bench
+.PHONY: run build test smoke ui-install ui-dev ui-build size size-release build-linux-arm64 seed-sample bench
 
 run:
 	@env $(GO_ENV) go run ./cmd/vigil
@@ -14,14 +15,17 @@ build:
 test:
 	@env $(GO_ENV) go test $(GO_PACKAGES)
 
+smoke: ui-build
+	@env $(GO_ENV) go test -count=1 -tags smoke ./test/smoke
+
 ui-install:
-	cd ui && bun install
+	cd ui && $(UI_RUNNER) install
 
 ui-dev:
-	cd ui && bun run dev
+	cd ui && $(UI_RUNNER) run dev
 
 ui-build:
-	cd ui && bun run build
+	cd ui && $(UI_RUNNER) run build
 
 size: ui-build
 	@mkdir -p bin

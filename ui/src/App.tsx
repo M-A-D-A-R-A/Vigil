@@ -114,6 +114,30 @@ function createFiltersForRange(
   };
 }
 
+function createFiltersAroundTimestamp(
+  timestamp: string,
+  current: LogFilterState = createRecentLogFilters(),
+  windowMs = 60 * 60 * 1000
+) {
+  const anchor = new Date(timestamp);
+  if (Number.isNaN(anchor.getTime())) {
+    return createFiltersForRange("5m", current);
+  }
+
+  const to = new Date(anchor.getTime() + 60 * 1000);
+  return {
+    ...createRecentLogFilters(to),
+    from: new Date(anchor.getTime() - windowMs).toISOString(),
+    to: to.toISOString(),
+    q: current.q,
+    level: current.level,
+    kind: current.kind,
+    name: current.name,
+    limit: current.limit,
+    page: "1"
+  };
+}
+
 function toLocalDateTimeValue(iso: string) {
   const value = new Date(iso);
   if (Number.isNaN(value.getTime())) {
@@ -264,6 +288,16 @@ function formatRangeLabel(filters: LogFilterState, preset: QuickRange) {
   return `Last ${preset}`;
 }
 
+function timestampFallsInsideRange(timestamp: string, filters: LogFilterState) {
+  const value = new Date(timestamp).getTime();
+  const from = new Date(filters.from).getTime();
+  const to = new Date(filters.to).getTime();
+  if (Number.isNaN(value) || Number.isNaN(from) || Number.isNaN(to)) {
+    return true;
+  }
+  return value >= from && value <= to;
+}
+
 function downloadBlob(filename: string, content: string, type: string) {
   const blob = new Blob([content], { type });
   const url = URL.createObjectURL(blob);
@@ -372,6 +406,7 @@ export default function App() {
     if (currentTab === "traces") return traces?.sync ?? null;
     return stats?.sync ?? null;
   }, [currentTab, logs?.sync, traces?.sync, stats?.sync]);
+  const latestIndexedAt = syncStatus?.latest_indexed_at || syncStatus?.latest_ingested_at || "";
 
   const currentWarnings = useMemo<ResultWarning[]>(() => {
     if (currentTab === "logs") return logs?.warnings ?? [];
@@ -384,6 +419,13 @@ export default function App() {
     if (currentTab === "traces") return traces?.total ?? 0;
     return stats?.total_events ?? 0;
   }, [currentTab, logs?.total, traces?.total, stats?.total_events]);
+
+  const latestDataOutsideWindow =
+    route.page === "project" &&
+    !liveTail &&
+    currentTotal === 0 &&
+    latestIndexedAt !== "" &&
+    !timestampFallsInsideRange(latestIndexedAt, logFilters);
 
   const retentionStatus = health?.retention ?? null;
   const logFiltersRef = useRef(logFilters);
@@ -530,6 +572,16 @@ export default function App() {
     }
   }
 
+  function loadProjectTab(tab: Tab, projectId: string, filters: LogFilterState, options?: { followLatest?: boolean }) {
+    if (tab === "logs") {
+      return loadLogs(projectId, filters, options);
+    }
+    if (tab === "traces") {
+      return loadTraces(projectId, filters);
+    }
+    return loadStats(projectId, filters);
+  }
+
   useEffect(() => {
     void loadProjects();
     void loadHealth();
@@ -542,30 +594,32 @@ export default function App() {
       return;
     }
 
+    const { projectId, tab } = route;
     const nextFilters = liveTail
       ? createFiltersForRange(liveRangePreset, logFilters)
       : { ...logFilters, page: "1" };
 
-    if (liveTail || route.tab === "logs") {
+    if (liveTail || tab === "logs") {
       setLogFilters(nextFilters);
     }
 
-    if (route.tab === "logs") {
-      void loadLogs(route.projectId, nextFilters, { followLatest: liveTail });
+    if (tab === "logs") {
+      void loadLogs(projectId, nextFilters, { followLatest: liveTail });
       return;
     }
-    if (route.tab === "traces") {
-      void loadTraces(route.projectId, nextFilters);
+    if (tab === "traces") {
+      void loadTraces(projectId, nextFilters);
       return;
     }
-    void loadStats(route.projectId, nextFilters);
-  }, [route.projectId, route.tab, liveTail]);
+    void loadStats(projectId, nextFilters);
+  }, [currentProjectId, currentTab, liveTail]);
 
   useEffect(() => {
     if (route.page !== "project" || route.tab !== "logs") {
       return;
     }
 
+    const { projectId } = route;
     if (logFiltersRef.current.q === searchText) {
       return;
     }
@@ -577,11 +631,11 @@ export default function App() {
         page: "1"
       };
       setLogFilters(nextFilters);
-      void loadLogs(route.projectId, nextFilters);
+      void loadLogs(projectId, nextFilters);
     }, 300);
 
     return () => window.clearTimeout(timeout);
-  }, [searchText, route.page, route.projectId, route.tab]);
+  }, [searchText, route.page, currentProjectId, currentTab]);
 
   usePolling(() => {
     if (route.page !== "project") {
@@ -690,9 +744,13 @@ export default function App() {
   }
 
   function handleRangePresetChange(range: Exclude<QuickRange, "custom">) {
+    const nextFilters = createFiltersForRange(range, { ...logFilters, q: searchText });
     setTimePreset(range);
     setLiveTail(false);
-    setLogFilters((current) => createFiltersForRange(range, current));
+    setLogFilters(nextFilters);
+    if (route.page === "project") {
+      void loadProjectTab(route.tab, route.projectId, nextFilters);
+    }
   }
 
   function handleCustomTimeChange(field: "from" | "to", value: string) {
@@ -751,6 +809,24 @@ export default function App() {
       }
       void loadStats(route.projectId, nextFilters);
     }
+  }
+
+  function handleShowLatestIndexedData() {
+    if (route.page !== "project" || !latestIndexedAt) {
+      return;
+    }
+
+    const nextFilters = createFiltersAroundTimestamp(
+      latestIndexedAt,
+      { ...logFilters, q: searchText },
+      Math.max(quickRangeMs(liveRangePreset), 60 * 60 * 1000)
+    );
+    setTimePreset("custom");
+    setLiveTail(false);
+    setSearchText(nextFilters.q);
+    setLogFilters(nextFilters);
+    setFilterDrawerOpen(false);
+    void loadProjectTab(route.tab, route.projectId, nextFilters);
   }
 
   async function handleCopyShareUrl() {
@@ -1046,6 +1122,16 @@ export default function App() {
           Raw ingest is ahead of indexed views. Latest ingested: {syncStatus.latest_ingested_at || "n/a"}.
         </section>
       ) : null}
+      {latestDataOutsideWindow ? (
+        <section className="alert warn alert-with-action">
+          <span>
+            Latest indexed data is at {formatDateTime(latestIndexedAt)}, outside {formatRangeLabel(logFilters, timePreset)}.
+          </span>
+          <button className="secondary" onClick={handleShowLatestIndexedData}>
+            Show latest indexed data
+          </button>
+        </section>
+      ) : null}
 
       {route.page === "projects" ? (
         <section className="projects-layout">
@@ -1058,11 +1144,14 @@ export default function App() {
             </div>
             <div className="create-form">
               <input
+                data-testid="project-name-input"
                 placeholder="my-side-project"
                 value={createName}
                 onChange={(event) => setCreateName(event.target.value)}
               />
-              <button onClick={() => void handleCreateProject()}>Create</button>
+              <button data-testid="create-project-button" onClick={() => void handleCreateProject()}>
+                Create
+              </button>
             </div>
           </section>
 
@@ -1077,7 +1166,9 @@ export default function App() {
                   Open project
                 </button>
               </div>
-              <pre className="code-block">{latestKey.ingestKey}</pre>
+              <pre className="code-block" data-testid="latest-ingest-key">
+                {latestKey.ingestKey}
+              </pre>
               <pre className="code-block code-block-spaced">{curlExample}</pre>
             </section>
           ) : null}
@@ -1193,7 +1284,12 @@ export default function App() {
 
               <nav className="tab-strip">
                 {(["logs", "traces", "stats"] as Tab[]).map((tab) => (
-                  <button key={tab} className={`tab-button ${currentTab === tab ? "active" : ""}`} onClick={() => changeTab(tab)}>
+                  <button
+                    key={tab}
+                    className={`tab-button ${currentTab === tab ? "active" : ""}`}
+                    data-testid={`tab-${tab}`}
+                    onClick={() => changeTab(tab)}
+                  >
                     <span>{tab}</span>
                     <strong>
                       {tab === "logs" ? logs?.total ?? 0 : tab === "traces" ? traces?.total ?? 0 : stats?.total_events ?? 0}
@@ -1211,7 +1307,9 @@ export default function App() {
                     <strong>Shown once</strong>
                   </div>
                 </div>
-                <pre className="code-block">{latestKey.ingestKey}</pre>
+                <pre className="code-block" data-testid="latest-ingest-key">
+                  {latestKey.ingestKey}
+                </pre>
                 <pre className="code-block code-block-spaced">{curlExample}</pre>
               </section>
             ) : null}
@@ -1270,14 +1368,16 @@ export default function App() {
                 <button className="secondary" onClick={() => void handleExportCurrentView()}>
                   Export
                 </button>
-                <button onClick={handleRefreshCurrentTab}>{currentTab === "logs" ? "Refresh table" : "Refresh"}</button>
+                <button data-testid="refresh-current-tab" onClick={handleRefreshCurrentTab}>
+                  {currentTab === "logs" ? "Refresh table" : "Refresh"}
+                </button>
               </div>
             </section>
 
             {currentTab === "logs" ? (
               <section className="logs-layout">
                 <section className="surface table-surface">
-                  <div className="table-shell">
+                  <div className="table-shell" data-testid="logs-table-shell">
                     {loading.logs ? <p className="muted table-state">Loading logs...</p> : null}
                     {!logs?.events.length && !loading.logs ? <p className="muted table-state">No events for this filter.</p> : null}
 
@@ -1455,7 +1555,7 @@ export default function App() {
                 <section className="surface stats-grid">
                   <div className="stats-card">
                     <span>Total events</span>
-                    <strong>{stats?.total_events ?? 0}</strong>
+                    <strong data-testid="stats-total-events">{stats?.total_events ?? 0}</strong>
                   </div>
                   <div className="stats-card">
                     <span>Token total</span>

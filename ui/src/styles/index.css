@@ -247,6 +247,17 @@ small {
   margin-bottom: 12px;
 }
 
+.alert-with-action {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.alert-with-action span {
+  line-height: 1.45;
+}
+
 .alert.info {
   border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
 }
@@ -694,7 +705,8 @@ small {
 
   .toolbar-surface,
   .project-title-row,
-  .topbar {
+  .topbar,
+  .alert-with-action {
     flex-direction: column;
     align-items: stretch;
   }
