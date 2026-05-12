@@ -2,6 +2,14 @@
 
 Vigil is a local-first observability box for side projects. It gives you a built-in UI for logs, traces, and stats, stores data locally, and uses project-scoped ingest keys so each app can send events without a larger observability stack.
 
+> Vigil is early alpha. It is designed first for local and trusted-network use, not internet-exposed production deployments.
+
+## Project Status
+
+- [Roadmap](ROADMAP.md) - where the project is going
+- [Contributing](CONTRIBUTING.md) - local setup and contribution guidance
+- [Security](SECURITY.md) - how to report vulnerabilities and current security notes
+
 ## Install
 
 Install the latest GitHub Release:
