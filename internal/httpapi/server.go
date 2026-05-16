@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -131,11 +132,21 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	filters, err := query.ParseLogFilters(r.URL.Query(), time.Now().UTC())
 	if err != nil {
+		var queryErr *query.QueryError
+		if errors.As(err, &queryErr) {
+			writeQueryError(w, queryErr)
+			return
+		}
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 	result, err := s.store.ListLogs(filters)
 	if err != nil {
+		var queryErr *query.QueryError
+		if errors.As(err, &queryErr) {
+			writeQueryError(w, queryErr)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -197,5 +208,12 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 func writeError(w http.ResponseWriter, status int, err error) {
 	writeJSON(w, status, map[string]any{
 		"error": err.Error(),
+	})
+}
+
+func writeQueryError(w http.ResponseWriter, err *query.QueryError) {
+	writeJSON(w, http.StatusBadRequest, map[string]any{
+		"error":       "invalid query",
+		"query_error": err,
 	})
 }

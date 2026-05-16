@@ -115,6 +115,16 @@ input::placeholder {
   color: var(--text-muted);
 }
 
+input.input-error {
+  border-color: var(--danger);
+}
+
+.query-error {
+  display: block;
+  margin-top: 4px;
+  color: var(--danger);
+}
+
 pre,
 code {
   font-family: "SFMono-Regular", SFMono-Regular, ui-monospace, monospace;

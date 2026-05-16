@@ -568,6 +568,14 @@ func (s *Store) ListLogs(filters query.LogFilters) (*LogList, error) {
 		where = append(where, "f.events_fts MATCH ?")
 		args = append(args, filters.Query)
 	}
+	if filters.Structured != nil {
+		predicate, err := compileStructuredQuery(filters.Structured.Expr)
+		if err != nil {
+			return nil, err
+		}
+		where = append(where, predicate.sql)
+		args = append(args, predicate.args...)
+	}
 
 	clause := strings.Join(where, " AND ")
 	countQuery := fmt.Sprintf(`SELECT COUNT(*) FROM events e %s WHERE %s`, join, clause)

@@ -84,8 +84,22 @@ Supported query params:
 - `level`
 - `name`
 - `q`
+- `query`
 - `page`
 - `limit`
+
+`q` is broad full-text search across event name, source, level, attrs, and body text.
+
+`query` is structured search. Initial examples:
+
+```txt
+level = "error" && timestamp > now() - 6h
+source = "api" && attrs.route = "/login"
+name ~= "checkout"
+trace_id = "trace_123"
+```
+
+Supported structured fields are `kind`, `level`, `source`, `name`, `trace_id`, `span_id`, `timestamp` / `ts`, plus one-level JSON fields such as `attrs.route` and `body.message`.
 
 Responses can include:
 

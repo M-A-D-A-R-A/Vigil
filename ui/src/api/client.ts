@@ -19,6 +19,25 @@ export type ResultWarning = {
   message: string;
 };
 
+export type QueryError = {
+  message: string;
+  start: number;
+  end: number;
+  suggestion?: string;
+};
+
+export class ApiError extends Error {
+  status: number;
+  queryError?: QueryError;
+
+  constructor(message: string, status: number, queryError?: QueryError) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.queryError = queryError;
+  }
+}
+
 export type RetentionStatus = {
   enabled: boolean;
   dry_run: boolean;
@@ -125,7 +144,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       typeof payload.error === "string"
         ? payload.error
         : `Request failed with status ${response.status}`;
-    throw new Error(message);
+    const queryError =
+      typeof payload === "object" &&
+      payload !== null &&
+      "query_error" in payload &&
+      typeof payload.query_error === "object" &&
+      payload.query_error !== null
+        ? (payload.query_error as QueryError)
+        : undefined;
+    throw new ApiError(message, response.status, queryError);
   }
 
   return payload as T;

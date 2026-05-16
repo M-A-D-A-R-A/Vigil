@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  ApiError,
   createProject,
   EventRecord,
   getHealth,
@@ -8,6 +9,7 @@ import {
   getTraces,
   listProjects,
   Project,
+  QueryError,
   regenerateProjectKey,
   ResultWarning,
   StatsSummary,
@@ -29,6 +31,7 @@ type RouteState =
   | { page: "project"; projectId: string; tab: Tab };
 
 const defaultLogFilters = {
+  query: "",
   q: "",
   level: "",
   kind: "",
@@ -105,6 +108,7 @@ function createFiltersForRange(
     ...createRecentLogFilters(base),
     from: new Date(base.getTime() - quickRangeMs(range)).toISOString(),
     to: base.toISOString(),
+    query: current.query,
     q: current.q,
     level: current.level,
     kind: current.kind,
@@ -129,6 +133,7 @@ function createFiltersAroundTimestamp(
     ...createRecentLogFilters(to),
     from: new Date(anchor.getTime() - windowMs).toISOString(),
     to: to.toISOString(),
+    query: current.query,
     q: current.q,
     level: current.level,
     kind: current.kind,
@@ -179,12 +184,14 @@ function readExplorerUrlState(): ExplorerUrlState {
   if (to) filters.to = to;
 
   const q = params.get("q");
+  const query = params.get("query");
   const kind = params.get("kind");
   const level = params.get("level");
   const name = params.get("name");
   const page = params.get("page");
   const limit = params.get("limit");
 
+  if (query) filters.query = query;
   if (q) filters.q = q;
   if (kind) filters.kind = kind;
   if (level) filters.level = level;
@@ -216,6 +223,7 @@ function buildExplorerUrl(route: RouteState, state: ExplorerUrlState) {
   params.set("from", state.filters.from);
   params.set("to", state.filters.to);
   if (state.filters.q) params.set("q", state.filters.q);
+  if (state.filters.query) params.set("query", state.filters.query);
   if (state.filters.kind) params.set("kind", state.filters.kind);
   if (state.filters.level) params.set("level", state.filters.level);
   if (state.filters.name) params.set("name", state.filters.name);
@@ -374,7 +382,7 @@ export default function App() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [createName, setCreateName] = useState("");
   const [latestKey, setLatestKey] = useState<KeyState | null>(null);
-  const [searchText, setSearchText] = useState(initialExplorerState.filters.q);
+  const [queryText, setQueryText] = useState(initialExplorerState.filters.query);
   const [logFilters, setLogFilters] = useState<LogFilterState>(initialExplorerState.filters);
   const [timePreset, setTimePreset] = useState<QuickRange>(initialExplorerState.timePreset);
   const [liveTail, setLiveTail] = useState(initialExplorerState.liveTail);
@@ -384,6 +392,7 @@ export default function App() {
   const [health, setHealth] = useState<Awaited<ReturnType<typeof getHealth>> | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<EventRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [queryError, setQueryError] = useState<QueryError | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
   const [loading, setLoading] = useState({
@@ -445,7 +454,7 @@ export default function App() {
       const nextRoute = readRoute();
       const nextState = readExplorerUrlState();
       setRoute(nextRoute);
-      setSearchText(nextState.filters.q);
+      setQueryText(nextState.filters.query);
       setLogFilters(nextState.filters);
       setTimePreset(nextState.timePreset);
       setLiveTail(nextState.liveTail);
@@ -524,8 +533,12 @@ export default function App() {
       ) {
         setSelectedEvent(response.events[0] ?? null);
       }
+      setQueryError(null);
       setError(null);
     } catch (loadError) {
+      if (loadError instanceof ApiError && loadError.queryError) {
+        setQueryError(loadError.queryError);
+      }
       setError(loadError instanceof Error ? loadError.message : "Failed to load logs");
     } finally {
       setLoading((current) => ({ ...current, logs: false }));
@@ -620,14 +633,14 @@ export default function App() {
     }
 
     const { projectId } = route;
-    if (logFiltersRef.current.q === searchText) {
+    if (logFiltersRef.current.query === queryText) {
       return;
     }
 
     const timeout = window.setTimeout(() => {
       const nextFilters = {
         ...logFiltersRef.current,
-        q: searchText,
+        query: queryText,
         page: "1"
       };
       setLogFilters(nextFilters);
@@ -635,7 +648,7 @@ export default function App() {
     }, 300);
 
     return () => window.clearTimeout(timeout);
-  }, [searchText, route.page, currentProjectId, currentTab]);
+  }, [queryText, route.page, currentProjectId, currentTab]);
 
   usePolling(() => {
     if (route.page !== "project") {
@@ -677,7 +690,7 @@ export default function App() {
       setRoute(nextRoute);
       navigate(nextRoute);
       setTimePreset("5m");
-      setSearchText("");
+      setQueryText("");
       setLogFilters(createFiltersForRange("5m"));
       setLiveTail(false);
       setSelectedEvent(null);
@@ -744,7 +757,7 @@ export default function App() {
   }
 
   function handleRangePresetChange(range: Exclude<QuickRange, "custom">) {
-    const nextFilters = createFiltersForRange(range, { ...logFilters, q: searchText });
+    const nextFilters = createFiltersForRange(range, { ...logFilters, query: queryText });
     setTimePreset(range);
     setLiveTail(false);
     setLogFilters(nextFilters);
@@ -777,7 +790,7 @@ export default function App() {
       return;
     }
 
-    const nextFilters = { ...logFilters, q: searchText, page: "1" };
+    const nextFilters = { ...logFilters, query: queryText, page: "1" };
     setLogFilters(nextFilters);
     setFilterDrawerOpen(false);
     if (route.tab === "logs") {
@@ -795,7 +808,7 @@ export default function App() {
     const nextFilters = createFiltersForRange("5m");
     setTimePreset("5m");
     setLiveTail(false);
-    setSearchText("");
+    setQueryText("");
     setLogFilters(nextFilters);
     setFilterDrawerOpen(false);
     if (route.page === "project") {
@@ -818,12 +831,12 @@ export default function App() {
 
     const nextFilters = createFiltersAroundTimestamp(
       latestIndexedAt,
-      { ...logFilters, q: searchText },
+      { ...logFilters, query: queryText },
       Math.max(quickRangeMs(liveRangePreset), 60 * 60 * 1000)
     );
     setTimePreset("custom");
     setLiveTail(false);
-    setSearchText(nextFilters.q);
+    setQueryText(nextFilters.query);
     setLogFilters(nextFilters);
     setFilterDrawerOpen(false);
     void loadProjectTab(route.tab, route.projectId, nextFilters);
@@ -1037,6 +1050,15 @@ export default function App() {
         {currentTab === "logs" ? (
           <div className="drawer-section">
             <span className="drawer-label">Log Filters</span>
+            <label className="field-block">
+              <span>Text search</span>
+              <input
+                placeholder="invoice, mailer, checkout"
+                value={logFilters.q}
+                onChange={(event) => handleFilterChange("q", event.target.value)}
+              />
+              <small>Searches event name, source, level, attrs, and body text.</small>
+            </label>
             <label className="field-block">
               <span>Kind</span>
               <select value={logFilters.kind} onChange={(event) => handleFilterChange("kind", event.target.value)}>
@@ -1326,17 +1348,24 @@ export default function App() {
                 <div className="toolbar-controls">
                   {currentTab === "logs" ? (
                     <label className="toolbar-search">
-                      <span>Search</span>
+                      <span>Query</span>
                       <input
-                        placeholder="search message, source, attrs, body, or event name"
-                        value={searchText}
-                        onChange={(event) => setSearchText(event.target.value)}
+                        className={queryError ? "input-error" : ""}
+                        placeholder={'level = "error" && attrs.route = "/login"'}
+                        value={queryText}
+                        onChange={(event) => setQueryText(event.target.value)}
                         onKeyDown={(event) => {
                           if (event.key === "Enter") {
                             handleApplyFilters();
                           }
                         }}
                       />
+                      {queryError ? (
+                        <small className="query-error">
+                          {queryError.message}
+                          {queryError.suggestion ? ` ${queryError.suggestion}` : ""}
+                        </small>
+                      ) : null}
                     </label>
                   ) : null}
                   <div className="toolbar-window">

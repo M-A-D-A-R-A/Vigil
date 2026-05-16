@@ -136,6 +136,82 @@ func TestUpsertEventsMixedBatchUpdatesReadModels(t *testing.T) {
 	}
 }
 
+func TestListLogsStructuredQueryCoreAndJSONFields(t *testing.T) {
+	store := openTestStore(t)
+	baseTS := time.Date(2026, 5, 8, 10, 0, 0, 0, time.UTC)
+
+	events := []*event.StoredEvent{
+		testEvent("evt_api_ok", event.KindLog, baseTS, map[string]string{"level": "info", "message": "login ok"}),
+		testEvent("evt_api_error", event.KindLog, baseTS.Add(time.Second), map[string]string{"level": "error", "message": "login failed"}),
+		testEvent("evt_worker_error", event.KindLog, baseTS.Add(2*time.Second), map[string]string{"level": "error", "message": "cleanup failed"}),
+	}
+	events[0].Source = "api"
+	events[0].Name = "request.completed"
+	events[0].Attrs = []byte(`{"route":"/login","status":200,"cached":true}`)
+	events[1].Source = "api"
+	events[1].Name = "request.failed"
+	events[1].TraceID = "trace_login"
+	events[1].Attrs = []byte(`{"route":"/login","status":503,"cached":false}`)
+	events[2].Source = "worker"
+	events[2].Name = "job.failed"
+	events[2].Attrs = []byte(`{"job":"cleanup","status":500}`)
+
+	if _, _, err := store.UpsertEvents(events); err != nil {
+		t.Fatalf("upsert events: %v", err)
+	}
+
+	cases := []struct {
+		name  string
+		query string
+		total int
+	}{
+		{name: "core fields", query: `level = "error" && source = "api"`, total: 1},
+		{name: "json string and number", query: `attrs.route = "/login" && attrs.status >= 500`, total: 1},
+		{name: "json bool", query: `attrs.cached = true`, total: 1},
+		{name: "contains", query: `body.message ~= "failed"`, total: 2},
+		{name: "trace id", query: `trace_id = "trace_login"`, total: 1},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			logs, err := store.ListLogs(testStructuredLogFilters(t, baseTS, tt.query, query.LogFilters{}))
+			if err != nil {
+				t.Fatalf("list logs: %v", err)
+			}
+			if logs.Total != tt.total {
+				t.Fatalf("expected total %d, got %d", tt.total, logs.Total)
+			}
+		})
+	}
+}
+
+func TestListLogsStructuredQueryTimestampAndCombinedFilters(t *testing.T) {
+	store := openTestStore(t)
+	baseTS := time.Date(2026, 5, 8, 10, 0, 0, 0, time.UTC)
+
+	events := []*event.StoredEvent{
+		testEvent("evt_old", event.KindLog, baseTS, map[string]string{"level": "info", "message": "checkout old"}),
+		testEvent("evt_new", event.KindLog, baseTS.Add(time.Hour), map[string]string{"level": "error", "message": "checkout new"}),
+	}
+	if _, _, err := store.UpsertEvents(events); err != nil {
+		t.Fatalf("upsert events: %v", err)
+	}
+
+	logs, err := store.ListLogs(testStructuredLogFilters(t, baseTS, `timestamp > "2026-05-08T10:30:00Z"`, query.LogFilters{
+		Query: "checkout",
+		Kind:  "log",
+	}))
+	if err != nil {
+		t.Fatalf("list logs: %v", err)
+	}
+	if logs.Total != 1 {
+		t.Fatalf("expected one combined structured/FTS match, got %d", logs.Total)
+	}
+	if logs.Events[0].EventID != "evt_new" {
+		t.Fatalf("expected evt_new, got %s", logs.Events[0].EventID)
+	}
+}
+
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
 	store, err := Open(context.Background(), t.TempDir()+"/index/vigil.db")
@@ -176,6 +252,18 @@ func testEvent(id string, kind event.Kind, ts time.Time, values map[string]strin
 func testLogFilters(baseTS time.Time, overrides query.LogFilters) query.LogFilters {
 	filters := overrides
 	filters.RangeFilters = testRangeFilters(baseTS)
+	return filters
+}
+
+func testStructuredLogFilters(t *testing.T, baseTS time.Time, raw string, overrides query.LogFilters) query.LogFilters {
+	t.Helper()
+	filters := testLogFilters(baseTS, overrides)
+	structured, err := query.ParseStructuredQuery(raw, baseTS.Add(2*time.Hour))
+	if err != nil {
+		t.Fatalf("parse structured query: %v", err)
+	}
+	filters.StructuredQuery = raw
+	filters.Structured = structured
 	return filters
 }
 

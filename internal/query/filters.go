@@ -28,10 +28,12 @@ type RangeFilters struct {
 
 type LogFilters struct {
 	RangeFilters
-	Kind  string
-	Level string
-	Name  string
-	Query string
+	Kind            string
+	Level           string
+	Name            string
+	Query           string
+	StructuredQuery string
+	Structured      *StructuredQuery
 }
 
 func ParseLogFilters(values url.Values, now time.Time) (LogFilters, error) {
@@ -39,12 +41,19 @@ func ParseLogFilters(values url.Values, now time.Time) (LogFilters, error) {
 	if err != nil {
 		return LogFilters{}, err
 	}
+	structuredRaw := strings.TrimSpace(values.Get("query"))
+	structured, err := ParseStructuredQuery(structuredRaw, now)
+	if err != nil {
+		return LogFilters{}, err
+	}
 	return LogFilters{
-		RangeFilters: ranges,
-		Kind:         strings.ToLower(strings.TrimSpace(values.Get("kind"))),
-		Level:        strings.ToLower(strings.TrimSpace(values.Get("level"))),
-		Name:         strings.TrimSpace(values.Get("name")),
-		Query:        strings.TrimSpace(values.Get("q")),
+		RangeFilters:    ranges,
+		Kind:            strings.ToLower(strings.TrimSpace(values.Get("kind"))),
+		Level:           strings.ToLower(strings.TrimSpace(values.Get("level"))),
+		Name:            strings.TrimSpace(values.Get("name")),
+		Query:           strings.TrimSpace(values.Get("q")),
+		StructuredQuery: structuredRaw,
+		Structured:      structured,
 	}, nil
 }
 

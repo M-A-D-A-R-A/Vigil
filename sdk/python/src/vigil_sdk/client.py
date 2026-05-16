@@ -77,6 +77,8 @@ class VigilClient:
         self.source = _clean(source) or "python-sdk"
         self.timeout = timeout
         self._transport = transport or _urlopen_transport
+        self.disabled = False
+        self.disabled_reason = ""
 
     @classmethod
     def from_env(
@@ -85,6 +87,7 @@ class VigilClient:
         source: Optional[str] = None,
         timeout: float = 10.0,
         transport: Optional[Transport] = None,
+        optional: bool = False,
     ) -> "VigilClient":
         base_url = os.getenv("VIGIL_BASE_URL", "http://localhost:8080")
         project_id = os.getenv("VIGIL_PROJECT_ID")
@@ -100,6 +103,15 @@ class VigilClient:
             if not _clean(value)
         ]
         if missing:
+            if optional:
+                return NoopVigilClient(
+                    base_url=base_url,
+                    project_id=project_id,
+                    ingest_key=ingest_key,
+                    source=resolved_source,
+                    timeout=timeout,
+                    disabled_reason=f"missing required environment variables: {', '.join(missing)}",
+                )
             raise VigilConfigError(f"missing required environment variables: {', '.join(missing)}")
 
         return cls(
@@ -295,6 +307,75 @@ class VigilClient:
             raise VigilConfigError(f"missing required ingest configuration: {', '.join(missing)}")
 
 
+class NoopVigilClient(VigilClient):
+    """Disabled Vigil client that keeps app code free of configuration checks."""
+
+    def __init__(
+        self,
+        *,
+        base_url: str = "http://localhost:8080",
+        project_id: Optional[str] = None,
+        ingest_key: Optional[str] = None,
+        source: str = "python-sdk",
+        timeout: float = 10.0,
+        disabled_reason: str = "Vigil is disabled",
+    ) -> None:
+        super().__init__(
+            base_url=base_url,
+            project_id=project_id,
+            ingest_key=ingest_key,
+            source=source,
+            timeout=timeout,
+            transport=_noop_transport,
+        )
+        self.disabled = True
+        self.disabled_reason = disabled_reason
+
+    def health(self) -> dict[str, Any]:
+        return {"status": "disabled", "app": "vigil", "reason": self.disabled_reason}
+
+    def create_project(self, name: str) -> ProjectResult:
+        return ProjectResult(project={}, ingest_key="")
+
+    def list_projects(self) -> list[dict[str, Any]]:
+        return []
+
+    def rotate_key(self, project_id: Optional[str] = None) -> ProjectResult:
+        return ProjectResult(project={}, ingest_key="")
+
+    def ingest(
+        self,
+        *,
+        kind: str,
+        name: str,
+        attrs: Optional[Mapping[str, Any]] = None,
+        body: Any = None,
+        ts: Optional[Union[datetime, str]] = None,
+        source: Optional[str] = None,
+        level: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        span_id: Optional[str] = None,
+    ) -> IngestResult:
+        return IngestResult(event_id="", received_at="", indexed_async=False)
+
+    def logs(self, **params: Any) -> dict[str, Any]:
+        return {"events": [], "page": 1, "limit": 0, "total": 0, "sync": self.health()}
+
+    def traces(self, **params: Any) -> dict[str, Any]:
+        return {"traces": [], "page": 1, "limit": 0, "total": 0, "sync": self.health()}
+
+    def stats(self, **params: Any) -> dict[str, Any]:
+        return {
+            "total_events": 0,
+            "by_kind": [],
+            "by_level": [],
+            "token_total": 0,
+            "cost_total": 0,
+            "volume": [],
+            "sync": self.health(),
+        }
+
+
 def _urlopen_transport(
     method: str,
     url: str,
@@ -308,6 +389,16 @@ def _urlopen_transport(
             return response.status, response.read()
     except HTTPError as exc:
         return exc.code, exc.read()
+
+
+def _noop_transport(
+    method: str,
+    url: str,
+    headers: Mapping[str, str],
+    body: Optional[bytes],
+    timeout: float,
+) -> tuple[int, bytes]:
+    return 204, b"{}"
 
 
 def _normalize_base_url(raw: str) -> str:

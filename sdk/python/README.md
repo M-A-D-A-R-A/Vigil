@@ -42,6 +42,13 @@ from vigil_sdk import VigilClient
 vigil = VigilClient.from_env()
 ```
 
+For optional instrumentation, use `optional=True`. This returns a no-op client when `VIGIL_PROJECT_ID` or `VIGIL_INGEST_KEY` is missing, so app code can keep calling `log`, `trace`, and `metric` without scattered configuration checks:
+
+```python
+vigil = VigilClient.from_env(optional=True)
+vigil.log("app.started", message="app started")
+```
+
 ## Send Events
 
 ```python

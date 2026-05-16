@@ -323,10 +323,32 @@ func TestProjectLogFiltersAgainstSeededProject(t *testing.T) {
 	assertLogTotal(t, baseLogsURL+"&q=cleanup", 1)
 	assertLogTotal(t, baseLogsURL+"&q=mailer", 1)
 	assertLogTotal(t, baseLogsURL+"&q=invoice", 2)
+	assertLogTotal(t, baseLogsURL+"&query="+url.QueryEscape(`level = "error" && source = "worker"`), 1)
+	assertLogTotal(t, baseLogsURL+"&query="+url.QueryEscape(`attrs.route = "/chat" || attrs.value >= 7`), 2)
+	assertLogTotal(t, baseLogsURL+"&q=invoice&query="+url.QueryEscape(`body.message ~= "customer"`), 1)
 
 	narrowFrom := url.QueryEscape(baseTS.Add(-150 * time.Second).Format(time.RFC3339))
 	narrowTo := url.QueryEscape(baseTS.Add(1 * time.Minute).Format(time.RFC3339))
 	assertLogTotal(t, server.URL+"/api/logs?project_id="+projectID+"&from="+narrowFrom+"&to="+narrowTo, 2)
+
+	invalidQuery := map[string]any{}
+	resp, err := http.Get(baseLogsURL + "&query=" + url.QueryEscape(`level = error`))
+	if err != nil {
+		t.Fatalf("invalid query request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected invalid query status 400, got %d", resp.StatusCode)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&invalidQuery); err != nil {
+		t.Fatalf("decode invalid query response: %v", err)
+	}
+	if invalidQuery["error"] != "invalid query" {
+		t.Fatalf("expected invalid query error, got %v", invalidQuery)
+	}
+	if _, ok := invalidQuery["query_error"].(map[string]any); !ok {
+		t.Fatalf("expected query_error object, got %v", invalidQuery)
+	}
 
 	pageOne := map[string]any{}
 	getJSON(t, baseLogsURL+"&limit=2&page=1", &pageOne)

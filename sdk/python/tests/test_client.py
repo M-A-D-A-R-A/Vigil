@@ -6,7 +6,7 @@ import os
 import unittest
 from unittest.mock import patch
 
-from vigil_sdk import ProjectResult, VigilClient, VigilConfigError, VigilHTTPError
+from vigil_sdk import NoopVigilClient, ProjectResult, VigilClient, VigilConfigError, VigilHTTPError
 
 
 class FakeTransport:
@@ -54,6 +54,17 @@ class VigilClientTest(unittest.TestCase):
         with patch.dict(os.environ, {"VIGIL_BASE_URL": "http://localhost:8080"}, clear=True):
             with self.assertRaisesRegex(VigilConfigError, "VIGIL_PROJECT_ID, VIGIL_INGEST_KEY"):
                 VigilClient.from_env(transport=FakeTransport())
+
+    def test_from_env_optional_returns_noop_client(self):
+        with patch.dict(os.environ, {"VIGIL_BASE_URL": "http://localhost:8080"}, clear=True):
+            client = VigilClient.from_env(optional=True, transport=FakeTransport())
+
+        self.assertIsInstance(client, NoopVigilClient)
+        result = client.log("request.completed", message="ok")
+        self.assertEqual(result.event_id, "")
+        self.assertFalse(result.indexed_async)
+        self.assertEqual(client.logs()["total"], 0)
+        self.assertEqual(client.health()["status"], "disabled")
 
     def test_log_sends_ingest_envelope(self):
         transport = FakeTransport()
