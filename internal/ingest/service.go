@@ -11,6 +11,7 @@ import (
 	"vigil/internal/project"
 	"vigil/internal/store/raw"
 	"vigil/internal/store/sqlite"
+	"vigil/internal/tail"
 )
 
 type Result struct {
@@ -32,6 +33,7 @@ type Service struct {
 	raw            *raw.Store
 	db             *sqlite.Store
 	worker         *index.Worker
+	tail           *tail.Hub
 	maxBytes       int
 	gate           *sync.RWMutex
 	statsMu        sync.Mutex
@@ -40,7 +42,7 @@ type Service struct {
 	rateWindowSize time.Duration
 }
 
-func NewService(projects *project.Service, rawStore *raw.Store, db *sqlite.Store, worker *index.Worker, maxBytes int, gate *sync.RWMutex) *Service {
+func NewService(projects *project.Service, rawStore *raw.Store, db *sqlite.Store, worker *index.Worker, tailHub *tail.Hub, maxBytes int, gate *sync.RWMutex) *Service {
 	if maxBytes <= 0 {
 		maxBytes = event.DefaultMaxPayload
 	}
@@ -52,6 +54,7 @@ func NewService(projects *project.Service, rawStore *raw.Store, db *sqlite.Store
 		raw:            rawStore,
 		db:             db,
 		worker:         worker,
+		tail:           tailHub,
 		maxBytes:       maxBytes,
 		gate:           gate,
 		rateWindowSize: time.Minute,
@@ -83,6 +86,9 @@ func (s *Service) Ingest(authorization string, payload []byte) (*Result, error) 
 
 	if _, err := s.raw.Append(ev); err != nil {
 		return nil, err
+	}
+	if s.tail != nil {
+		s.tail.Publish(ev)
 	}
 
 	if err := s.db.MarkLatestIngested(ev.ReceivedAt); err != nil {

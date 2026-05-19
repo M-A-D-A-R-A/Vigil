@@ -11,12 +11,14 @@ import (
 	"time"
 
 	"vigil/internal/config"
+	"vigil/internal/event"
 	"vigil/internal/index"
 	"vigil/internal/ingest"
 	"vigil/internal/project"
 	"vigil/internal/query"
 	"vigil/internal/retention"
 	"vigil/internal/store/sqlite"
+	"vigil/internal/tail"
 	webassets "vigil/web"
 )
 
@@ -25,12 +27,13 @@ type Server struct {
 	projects  *project.Service
 	ingest    *ingest.Service
 	indexer   *index.Worker
+	tail      *tail.Hub
 	store     *sqlite.Store
 	retention *retention.Engine
 	staticFS  fs.FS
 }
 
-func New(cfg config.Config, projects *project.Service, ingestService *ingest.Service, indexer *index.Worker, store *sqlite.Store, retentionEngine *retention.Engine) (*Server, error) {
+func New(cfg config.Config, projects *project.Service, ingestService *ingest.Service, indexer *index.Worker, tailHub *tail.Hub, store *sqlite.Store, retentionEngine *retention.Engine) (*Server, error) {
 	staticFS, err := fs.Sub(webassets.Assets, "dist")
 	if err != nil {
 		return nil, fmt.Errorf("load embedded UI: %w", err)
@@ -41,6 +44,7 @@ func New(cfg config.Config, projects *project.Service, ingestService *ingest.Ser
 		projects:  projects,
 		ingest:    ingestService,
 		indexer:   indexer,
+		tail:      tailHub,
 		store:     store,
 		retention: retentionEngine,
 		staticFS:  staticFS,
@@ -55,6 +59,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/projects/{id}/keys/regenerate", s.handleRegenerateProjectKey)
 	mux.HandleFunc("POST /api/ingest", s.handleIngest)
 	mux.HandleFunc("GET /api/logs", s.handleLogs)
+	mux.HandleFunc("GET /api/logs/tail", s.handleLogsTail)
 	mux.HandleFunc("GET /api/traces", s.handleTraces)
 	mux.HandleFunc("GET /api/stats", s.handleStats)
 	mux.Handle("/", s.handleSPA())
@@ -73,6 +78,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"sync":      status,
 		"ingest":    s.ingest.Stats(),
 		"index":     s.indexer.Status(),
+		"tail":      s.tail.Status(),
 		"retention": s.retention.Status(),
 	})
 }
@@ -156,6 +162,103 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleLogsTail(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, fmt.Errorf("streaming is not supported"))
+		return
+	}
+
+	filters, err := query.ParseLogFilters(r.URL.Query(), time.Now().UTC())
+	if err != nil {
+		var queryErr *query.QueryError
+		if errors.As(err, &queryErr) {
+			writeQueryError(w, queryErr)
+			return
+		}
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if strings.TrimSpace(r.URL.Query().Get("to")) == "" {
+		filters.To = time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC)
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	subscription := s.tail.Subscribe(func(ev *event.StoredEvent) bool {
+		return query.MatchLogEvent(filters, ev)
+	})
+	defer subscription.Close()
+
+	cursor := strings.TrimSpace(r.URL.Query().Get("after"))
+	if cursor == "" {
+		cursor = strings.TrimSpace(r.Header.Get("Last-Event-ID"))
+	}
+	if cursor != "" {
+		events, err := s.store.ListLogsAfter(filters, cursor, query.MaxPageSize)
+		if err != nil {
+			_ = writeSSE(w, "error", "", map[string]string{"error": err.Error()})
+			flusher.Flush()
+			return
+		}
+		for i := range events {
+			if err := writeSSE(w, "log", events[i].EventID, events[i]); err != nil {
+				return
+			}
+		}
+		flusher.Flush()
+	}
+
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case ev, ok := <-subscription.Events:
+			if !ok {
+				return
+			}
+			if err := writeSSE(w, "log", ev.EventID, ev); err != nil {
+				return
+			}
+			flusher.Flush()
+		case <-heartbeat.C:
+			if err := writeSSE(w, "ping", "", map[string]string{"status": "ok"}); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
+}
+
+func writeSSE(w io.Writer, eventName string, id string, payload any) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	if id != "" {
+		if _, err := fmt.Fprintf(w, "id: %s\n", id); err != nil {
+			return err
+		}
+	}
+	if eventName != "" {
+		if _, err := fmt.Fprintf(w, "event: %s\n", eventName); err != nil {
+			return err
+		}
+	}
+	if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *Server) handleTraces(w http.ResponseWriter, r *http.Request) {

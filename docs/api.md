@@ -140,6 +140,25 @@ Responses can include:
 - `warnings[]` when the requested page size is capped
 - `warnings[]` when more matching results exist beyond the current page
 
+`GET /api/logs/tail`
+
+Streams matching log events with Server-Sent Events:
+
+```http
+GET /api/logs/tail?project_id=proj_123&level=error&query=source%20%3D%20%22api%22
+Accept: text/event-stream
+```
+
+Events use the stored event ID as the SSE `id`, `event: log`, and a JSON stored event payload:
+
+```txt
+id: evt_123
+event: log
+data: {"event_id":"evt_123","kind":"log","name":"request.failed"}
+```
+
+Reconnect catch-up is supported with either `after=<event_id>` or the standard `Last-Event-ID` header. Catch-up reads from the SQLite read model before streaming newly published events. If `to` is omitted, live tail treats the upper time bound as open-ended so future events can match. Heartbeat pings are sent as `event: ping`.
+
 `GET /api/traces`
 
 Returns grouped trace timelines by `trace_id`, with the same `warnings[]` behavior for capped or partial paginated results.

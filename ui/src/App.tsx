@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ApiError,
+  buildLogTailUrl,
   createProject,
   EventRecord,
   getHealth,
@@ -20,6 +21,7 @@ import { usePolling } from "./hooks/usePolling";
 type Tab = "logs" | "traces" | "stats";
 type QuickRange = "5m" | "15m" | "1h" | "6h" | "24h" | "custom";
 type ThemeMode = "light" | "dark";
+type TailConnectionState = "idle" | "connecting" | "open" | "error";
 
 type KeyState = {
   project: Project;
@@ -141,6 +143,20 @@ function createFiltersAroundTimestamp(
     limit: current.limit,
     page: "1"
   };
+}
+
+function createTailParams(projectId: string, filters: LogFilterState, after = "") {
+  const params: Record<string, string> = {
+    project_id: projectId,
+    from: filters.from
+  };
+  if (after) params.after = after;
+  if (filters.q) params.q = filters.q;
+  if (filters.query) params.query = filters.query;
+  if (filters.kind) params.kind = filters.kind;
+  if (filters.level) params.level = filters.level;
+  if (filters.name) params.name = filters.name;
+  return params;
 }
 
 function toLocalDateTimeValue(iso: string) {
@@ -410,6 +426,7 @@ export default function App() {
   const [queryError, setQueryError] = useState<QueryError | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
+  const [tailConnection, setTailConnection] = useState<TailConnectionState>("idle");
   const [loading, setLoading] = useState({
     projects: false,
     logs: false,
@@ -448,6 +465,7 @@ export default function App() {
   const visibleSyncStatus = healthSyncStatus ?? syncStatus;
   const indexStatus = health?.index ?? null;
   const ingestStatus = health?.ingest ?? null;
+  const tailStatus = health?.tail ?? null;
   const latestIndexedAt = visibleSyncStatus?.latest_indexed_at || visibleSyncStatus?.latest_ingested_at || "";
 
   const latestDataOutsideWindow =
@@ -503,6 +521,58 @@ export default function App() {
       window.history.replaceState({}, "", nextUrl);
     }
   }, [route, logFilters, timePreset, liveTail]);
+
+  useEffect(() => {
+    if (route.page === "project" && route.tab !== "logs" && liveTail) {
+      setLiveTail(false);
+    }
+  }, [route.page, currentTab, liveTail]);
+
+  useEffect(() => {
+    if (route.page !== "project" || route.tab !== "logs" || !liveTail) {
+      setTailConnection("idle");
+      return;
+    }
+
+    const after = logs?.events[0]?.event_id ?? "";
+    const source = new EventSource(buildLogTailUrl(createTailParams(route.projectId, logFilters, after)));
+    setTailConnection("connecting");
+
+    source.onopen = () => {
+      setTailConnection("open");
+      setError(null);
+    };
+    source.onerror = () => {
+      setTailConnection("error");
+    };
+    source.addEventListener("log", (event) => {
+      const message = event as MessageEvent<string>;
+      try {
+        const record = JSON.parse(message.data) as EventRecord;
+        setLogs((current) => {
+          if (!current) return current;
+          if (current.events.some((existing) => existing.event_id === record.event_id)) {
+            return current;
+          }
+          const limit = Number.parseInt(logFiltersRef.current.limit, 10) || 50;
+          return {
+            ...current,
+            events: [record, ...current.events].slice(0, limit),
+            total: current.total + 1
+          };
+        });
+        setSelectedEvent(record);
+        setQueryError(null);
+        setError(null);
+      } catch {
+        setTailConnection("error");
+      }
+    });
+
+    return () => {
+      source.close();
+    };
+  }, [route.page, currentProjectId, currentTab, liveTail, logFilters.from, logFilters.q, logFilters.query, logFilters.kind, logFilters.level, logFilters.name]);
 
   async function loadHealth() {
     try {
@@ -693,7 +763,7 @@ export default function App() {
       return loadTraces(route.projectId, nextFilters);
     }
     return loadStats(route.projectId, nextFilters);
-  }, route.page === "project" && liveTail, 2500);
+  }, route.page === "project" && liveTail && route.tab !== "logs", 2500);
 
   async function handleCreateProject() {
     if (!createName.trim()) {
@@ -749,12 +819,18 @@ export default function App() {
     setRoute(nextRoute);
     navigate(nextRoute);
     setLogFilters((current) => ({ ...current, page: "1" }));
+    if (tab !== "logs") {
+      setLiveTail(false);
+    }
   }
 
   function handleToggleLiveTail() {
+    if (route.page !== "project" || route.tab !== "logs") {
+      return;
+    }
     const nextLiveTail = !liveTail;
     setLiveTail(nextLiveTail);
-    if (!nextLiveTail || route.page !== "project") {
+    if (!nextLiveTail) {
       return;
     }
 
@@ -765,15 +841,7 @@ export default function App() {
     const nextFilters = createFiltersForRange(nextPreset, logFilters);
     setLogFilters(nextFilters);
 
-    if (route.tab === "logs") {
-      void loadLogs(route.projectId, nextFilters, { followLatest: true });
-      return;
-    }
-    if (route.tab === "traces") {
-      void loadTraces(route.projectId, nextFilters);
-      return;
-    }
-    void loadStats(route.projectId, nextFilters);
+    void loadLogs(route.projectId, nextFilters, { followLatest: true });
   }
 
   function handleRangePresetChange(range: Exclude<QuickRange, "custom">) {
@@ -1139,12 +1207,20 @@ export default function App() {
               {visibleSyncStatus?.stale ? `Lag ${formatIndexLag(visibleSyncStatus)}` : "Indexed"}
             </span>
           ) : null}
+          {route.page === "project" && currentTab === "logs" && liveTail ? (
+            <span className={`status-pill ${tailConnection === "error" ? "warn" : "ok"}`}>
+              {tailConnection === "open" ? "Tail connected" : tailConnection === "error" ? "Tail reconnecting" : "Tail connecting"}
+            </span>
+          ) : null}
           {route.page === "project" && indexStatus?.rebuild_running ? <span className="status-pill warn">Rebuild running</span> : null}
           {route.page === "project" && !indexStatus?.rebuild_running && indexStatus?.rebuild_pending ? (
             <span className="status-pill warn">Rebuild queued</span>
           ) : null}
           {route.page === "project" && indexStatus && indexStatus.enqueue_drops > 0 ? (
             <span className="status-pill warn">{indexStatus.enqueue_drops} enqueue drops</span>
+          ) : null}
+          {route.page === "project" && tailStatus && tailStatus.dropped_tail_events > 0 ? (
+            <span className="status-pill warn">{tailStatus.dropped_tail_events} tail drops</span>
           ) : null}
           {retentionStatus?.enabled ? (
             <span className={`status-pill ${retentionStatus.dry_run ? "warn" : "ok"}`}>
@@ -1382,7 +1458,9 @@ export default function App() {
                   <p className="eyebrow">{currentTab}</p>
                   <strong>{currentTotal} matching records</strong>
                   <p className="muted">
-                    {liveTail ? "Live tail is active for this window." : `Showing ${formatRangeLabel(logFilters, timePreset)}.`}
+                    {liveTail && currentTab === "logs"
+                      ? `Streaming new logs by SSE${tailStatus ? ` with ${tailStatus.active_subscribers} active subscriber${tailStatus.active_subscribers === 1 ? "" : "s"}` : ""}.`
+                      : `Showing ${formatRangeLabel(logFilters, timePreset)}.`}
                   </p>
                 </div>
                 <div className="toolbar-controls">
@@ -1422,9 +1500,11 @@ export default function App() {
                       ))}
                     </div>
                   </div>
-                  <button className={`secondary toggle-button ${liveTail ? "active" : ""}`} onClick={handleToggleLiveTail}>
-                    {liveTail ? "Live tail on" : "Live tail off"}
-                  </button>
+                  {currentTab === "logs" ? (
+                    <button className={`secondary toggle-button ${liveTail ? "active" : ""}`} onClick={handleToggleLiveTail}>
+                      {liveTail ? "Live tail on" : "Live tail off"}
+                    </button>
+                  ) : null}
                 </div>
               </div>
               <div className="inline-actions">
