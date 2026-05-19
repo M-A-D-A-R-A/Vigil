@@ -247,6 +247,31 @@ func TestListLogsStructuredQueryTimestampAndCombinedFilters(t *testing.T) {
 	}
 }
 
+func TestListLogsAfterReturnsCatchupEventsAfterCursor(t *testing.T) {
+	store := openTestStore(t)
+	baseTS := time.Date(2026, 5, 8, 10, 0, 0, 0, time.UTC)
+
+	events := []*event.StoredEvent{
+		testEvent("evt_old", event.KindLog, baseTS, map[string]string{"level": "info", "message": "old"}),
+		testEvent("evt_mid", event.KindLog, baseTS.Add(time.Second), map[string]string{"level": "error", "message": "mid"}),
+		testEvent("evt_new", event.KindLog, baseTS.Add(2*time.Second), map[string]string{"level": "error", "message": "new"}),
+	}
+	if _, _, err := store.UpsertEvents(events); err != nil {
+		t.Fatalf("upsert events: %v", err)
+	}
+
+	catchup, err := store.ListLogsAfter(testLogFilters(baseTS, query.LogFilters{Level: "error"}), "evt_old", 10)
+	if err != nil {
+		t.Fatalf("list logs after cursor: %v", err)
+	}
+	if len(catchup) != 2 {
+		t.Fatalf("expected two catchup events, got %d", len(catchup))
+	}
+	if catchup[0].EventID != "evt_mid" || catchup[1].EventID != "evt_new" {
+		t.Fatalf("expected catchup in ascending order, got %+v", catchup)
+	}
+}
+
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
 	store, err := Open(context.Background(), t.TempDir()+"/index/vigil.db")

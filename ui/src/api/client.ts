@@ -71,6 +71,13 @@ export type IndexStatus = {
   rebuild_queue_capacity: number;
 };
 
+export type TailStatus = {
+  active_subscribers: number;
+  published_events: number;
+  dropped_tail_events: number;
+  disconnects: number;
+};
+
 export type EventRecord = {
   event_id: string;
   received_at: string;
@@ -199,6 +206,11 @@ export function getLogs(params: Record<string, string>) {
   return request<LogResponse>(`/api/logs?${query.toString()}`);
 }
 
+export function buildLogTailUrl(params: Record<string, string>) {
+  const query = new URLSearchParams(params);
+  return `/api/logs/tail?${query.toString()}`;
+}
+
 export function getTraces(params: Record<string, string>) {
   const query = new URLSearchParams(params);
   return request<TraceResponse>(`/api/traces?${query.toString()}`);
@@ -216,6 +228,7 @@ export function getHealth() {
     sync: SyncStatus;
     ingest: IngestStatus;
     index: IndexStatus;
+    tail: TailStatus;
     retention: RetentionStatus;
   }>("/api/health");
 }

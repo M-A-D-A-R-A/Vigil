@@ -37,7 +37,7 @@ func TestIngestReportsIndexedAsyncFalseWhenQueueDrops(t *testing.T) {
 		}
 	}
 
-	service := NewService(projects, rawStore, db, worker, event.DefaultMaxPayload, nil)
+	service := NewService(projects, rawStore, db, worker, nil, event.DefaultMaxPayload, nil)
 	payload, err := json.Marshal(map[string]any{
 		"schema_version": event.SchemaVersion,
 		"project_id":     created.Project.ID,

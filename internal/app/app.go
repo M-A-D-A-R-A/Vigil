@@ -13,6 +13,7 @@ import (
 	"vigil/internal/retention"
 	"vigil/internal/store/raw"
 	"vigil/internal/store/sqlite"
+	"vigil/internal/tail"
 )
 
 type App struct {
@@ -32,10 +33,11 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	rawStore := raw.NewStore(cfg.RawLogDir(), cfg.SegmentMaxBytes)
 	projectService := project.NewService(db)
 	worker := index.NewWorker(db, rawStore)
+	tailHub := tail.NewHub()
 	retentionGate := &sync.RWMutex{}
 	retentionEngine := retention.New(cfg.Retention, rawStore, worker, retentionGate)
-	ingestService := ingest.NewService(projectService, rawStore, db, worker, cfg.MaxEventBytes, retentionGate)
-	server, err := httpapi.New(cfg, projectService, ingestService, worker, db, retentionEngine)
+	ingestService := ingest.NewService(projectService, rawStore, db, worker, tailHub, cfg.MaxEventBytes, retentionGate)
+	server, err := httpapi.New(cfg, projectService, ingestService, worker, tailHub, db, retentionEngine)
 	if err != nil {
 		db.Close()
 		return nil, err

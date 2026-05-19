@@ -567,38 +567,9 @@ func indexingLag(latestIngestedAt string, latestIndexedAt string) (float64, stri
 }
 
 func (s *Store) ListLogs(filters query.LogFilters) (*LogList, error) {
-	args := []any{filters.From.Format(time.RFC3339Nano), filters.To.Format(time.RFC3339Nano)}
-	where := []string{"e.ts >= ?", "e.ts <= ?"}
-	join := ""
-
-	if filters.ProjectID != "" {
-		where = append(where, "e.project_id = ?")
-		args = append(args, filters.ProjectID)
-	}
-	if filters.Kind != "" {
-		where = append(where, "e.kind = ?")
-		args = append(args, filters.Kind)
-	}
-	if filters.Level != "" {
-		where = append(where, "e.level = ?")
-		args = append(args, filters.Level)
-	}
-	if filters.Name != "" {
-		where = append(where, "e.name = ?")
-		args = append(args, filters.Name)
-	}
-	if filters.Query != "" {
-		join = "JOIN events_fts f ON f.event_id = e.event_id"
-		where = append(where, "f.events_fts MATCH ?")
-		args = append(args, filters.Query)
-	}
-	if filters.Structured != nil {
-		predicate, err := compileStructuredQuery(filters.Structured.Expr)
-		if err != nil {
-			return nil, err
-		}
-		where = append(where, predicate.sql)
-		args = append(args, predicate.args...)
+	join, where, args, err := logQueryParts(filters)
+	if err != nil {
+		return nil, err
 	}
 
 	clause := strings.Join(where, " AND ")
@@ -672,6 +643,140 @@ func (s *Store) ListLogs(filters query.LogFilters) (*LogList, error) {
 		Warnings:   resultWarnings(filters.RangeFilters, total),
 		SyncStatus: status,
 	}, nil
+}
+
+func (s *Store) ListLogsAfter(filters query.LogFilters, afterEventID string, limit int) ([]event.StoredEvent, error) {
+	if limit < 1 {
+		limit = query.DefaultPageSize
+	}
+	if limit > query.MaxPageSize {
+		limit = query.MaxPageSize
+	}
+
+	join, where, args, err := logQueryParts(filters)
+	if err != nil {
+		return nil, err
+	}
+
+	afterEventID = strings.TrimSpace(afterEventID)
+	if afterEventID != "" {
+		cursorTS, cursorReceivedAt, ok, err := s.logCursor(afterEventID)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return []event.StoredEvent{}, nil
+		}
+		where = append(where, "(e.ts > ? OR (e.ts = ? AND e.received_at > ?))")
+		args = append(args, cursorTS, cursorTS, cursorReceivedAt)
+	}
+
+	clause := strings.Join(where, " AND ")
+	rows, err := s.db.Query(
+		fmt.Sprintf(
+			`SELECT e.event_id, e.received_at, e.schema_version, e.project_id, e.kind, e.ts, e.source, e.trace_id, e.span_id, e.level, e.name, e.attrs_json, e.body_json
+			 FROM events e %s
+			 WHERE %s
+			 ORDER BY e.ts ASC, e.received_at ASC
+			 LIMIT ?`,
+			join,
+			clause,
+		),
+		append(args, limit)...,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list logs after cursor: %w", err)
+	}
+	defer rows.Close()
+
+	events := []event.StoredEvent{}
+	for rows.Next() {
+		ev, err := scanStoredEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, ev)
+	}
+	return events, rows.Err()
+}
+
+func (s *Store) logCursor(eventID string) (ts string, receivedAt string, ok bool, err error) {
+	row := s.db.QueryRow(`SELECT ts, received_at FROM events WHERE event_id = ?`, eventID)
+	if scanErr := row.Scan(&ts, &receivedAt); scanErr != nil {
+		if scanErr == sql.ErrNoRows {
+			return "", "", false, nil
+		}
+		return "", "", false, scanErr
+	}
+	return ts, receivedAt, true, nil
+}
+
+type storedEventScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanStoredEvent(scanner storedEventScanner) (event.StoredEvent, error) {
+	var ev event.StoredEvent
+	var kind string
+	var attrs, body string
+	if err := scanner.Scan(
+		&ev.EventID,
+		&ev.ReceivedAt,
+		&ev.SchemaVersion,
+		&ev.ProjectID,
+		&kind,
+		&ev.TS,
+		&ev.Source,
+		&ev.TraceID,
+		&ev.SpanID,
+		&ev.Level,
+		&ev.Name,
+		&attrs,
+		&body,
+	); err != nil {
+		return event.StoredEvent{}, err
+	}
+	ev.Kind = event.Kind(kind)
+	ev.Attrs = json.RawMessage(attrs)
+	ev.Body = json.RawMessage(body)
+	return ev, nil
+}
+
+func logQueryParts(filters query.LogFilters) (string, []string, []any, error) {
+	args := []any{filters.From.Format(time.RFC3339Nano), filters.To.Format(time.RFC3339Nano)}
+	where := []string{"e.ts >= ?", "e.ts <= ?"}
+	join := ""
+
+	if filters.ProjectID != "" {
+		where = append(where, "e.project_id = ?")
+		args = append(args, filters.ProjectID)
+	}
+	if filters.Kind != "" {
+		where = append(where, "e.kind = ?")
+		args = append(args, filters.Kind)
+	}
+	if filters.Level != "" {
+		where = append(where, "e.level = ?")
+		args = append(args, filters.Level)
+	}
+	if filters.Name != "" {
+		where = append(where, "e.name = ?")
+		args = append(args, filters.Name)
+	}
+	if filters.Query != "" {
+		join = "JOIN events_fts f ON f.event_id = e.event_id"
+		where = append(where, "f.events_fts MATCH ?")
+		args = append(args, filters.Query)
+	}
+	if filters.Structured != nil {
+		predicate, err := compileStructuredQuery(filters.Structured.Expr)
+		if err != nil {
+			return "", nil, nil, err
+		}
+		where = append(where, predicate.sql)
+		args = append(args, predicate.args...)
+	}
+	return join, where, args, nil
 }
 
 func (s *Store) ListTraces(filters query.RangeFilters) (*TraceList, error) {

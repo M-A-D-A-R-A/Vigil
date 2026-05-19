@@ -1,12 +1,14 @@
 package app
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -376,6 +378,136 @@ func TestProjectLogFiltersAgainstSeededProject(t *testing.T) {
 	}
 }
 
+func TestLogTailStreamsMatchingEvents(t *testing.T) {
+	cfg := config.Config{
+		Addr:            ":0",
+		DataDir:         t.TempDir(),
+		MaxEventBytes:   1 << 20,
+		SegmentMaxBytes: 10 * 1024 * 1024,
+	}
+
+	app, err := New(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+	defer app.Close()
+
+	server := httptest.NewServer(app.Handler)
+	defer server.Close()
+
+	projectID, key := createProjectForTest(t, server.URL, "tail-app")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/api/logs/tail?project_id="+projectID+"&level=error", nil)
+	if err != nil {
+		t.Fatalf("new tail request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("tail request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from tail endpoint, got %d", resp.StatusCode)
+	}
+	if contentType := resp.Header.Get("Content-Type"); !strings.Contains(contentType, "text/event-stream") {
+		t.Fatalf("expected text/event-stream content type, got %q", contentType)
+	}
+
+	postIngest(t, server.URL, key, map[string]any{
+		"schema_version": 1,
+		"project_id":     projectID,
+		"kind":           "log",
+		"ts":             time.Now().UTC().Format(time.RFC3339),
+		"source":         "tail-test",
+		"level":          "info",
+		"name":           "tail.skip",
+		"body":           map[string]any{"message": "skip"},
+	})
+	postIngest(t, server.URL, key, map[string]any{
+		"schema_version": 1,
+		"project_id":     projectID,
+		"kind":           "log",
+		"ts":             time.Now().UTC().Format(time.RFC3339),
+		"source":         "tail-test",
+		"level":          "error",
+		"name":           "tail.match",
+		"body":           map[string]any{"message": "match"},
+	})
+
+	payload := readSSEPayload(t, bufio.NewReader(resp.Body), "log")
+	if got := payload["name"]; got != "tail.match" {
+		t.Fatalf("expected tail.match event, got %v", got)
+	}
+	if got := payload["level"]; got != "error" {
+		t.Fatalf("expected error level, got %v", got)
+	}
+}
+
+func TestLogTailBackfillsAfterCursor(t *testing.T) {
+	cfg := config.Config{
+		Addr:            ":0",
+		DataDir:         t.TempDir(),
+		MaxEventBytes:   1 << 20,
+		SegmentMaxBytes: 10 * 1024 * 1024,
+	}
+
+	app, err := New(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+	defer app.Close()
+
+	server := httptest.NewServer(app.Handler)
+	defer server.Close()
+
+	projectID, key := createProjectForTest(t, server.URL, "tail-catchup-app")
+	first := postIngestResult(t, server.URL, key, map[string]any{
+		"schema_version": 1,
+		"project_id":     projectID,
+		"kind":           "log",
+		"ts":             time.Now().UTC().Add(-time.Second).Format(time.RFC3339),
+		"source":         "tail-test",
+		"level":          "error",
+		"name":           "tail.first",
+		"body":           map[string]any{"message": "first"},
+	})
+	postIngestResult(t, server.URL, key, map[string]any{
+		"schema_version": 1,
+		"project_id":     projectID,
+		"kind":           "log",
+		"ts":             time.Now().UTC().Format(time.RFC3339),
+		"source":         "tail-test",
+		"level":          "error",
+		"name":           "tail.second",
+		"body":           map[string]any{"message": "second"},
+	})
+
+	waitFor(t, 2*time.Second, func() bool {
+		result := map[string]any{}
+		getJSON(t, server.URL+"/api/logs?project_id="+projectID+"&level=error", &result)
+		return int(result["total"].(float64)) == 2
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/api/logs/tail?project_id="+projectID+"&level=error&after="+first["event_id"].(string), nil)
+	if err != nil {
+		t.Fatalf("new tail request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("tail request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	payload := readSSEPayload(t, bufio.NewReader(resp.Body), "log")
+	if got := payload["name"]; got != "tail.second" {
+		t.Fatalf("expected tail.second catchup event, got %v", got)
+	}
+}
+
 func createProjectForTest(t *testing.T, baseURL, name string) (string, string) {
 	t.Helper()
 	createResp := map[string]any{}
@@ -396,6 +528,11 @@ func assertLogTotal(t *testing.T, requestURL string, want int) {
 
 func postIngest(t *testing.T, baseURL, key string, payload map[string]any) {
 	t.Helper()
+	postIngestResult(t, baseURL, key, payload)
+}
+
+func postIngestResult(t *testing.T, baseURL, key string, payload map[string]any) map[string]any {
+	t.Helper()
 	body, _ := json.Marshal(payload)
 	req, err := http.NewRequest(http.MethodPost, baseURL+"/api/ingest", bytes.NewReader(body))
 	if err != nil {
@@ -411,6 +548,43 @@ func postIngest(t *testing.T, baseURL, key string, payload map[string]any) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("expected 202 from ingest, got %d", resp.StatusCode)
+	}
+	result := map[string]any{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode ingest response: %v", err)
+	}
+	return result
+}
+
+func readSSEPayload(t *testing.T, reader *bufio.Reader, wantEvent string) map[string]any {
+	t.Helper()
+
+	currentEvent := ""
+	currentData := ""
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read SSE line: %v", err)
+		}
+		line = strings.TrimRight(line, "\r\n")
+		if line == "" {
+			if currentEvent == wantEvent && currentData != "" {
+				payload := map[string]any{}
+				if err := json.Unmarshal([]byte(currentData), &payload); err != nil {
+					t.Fatalf("decode SSE payload: %v", err)
+				}
+				return payload
+			}
+			currentEvent = ""
+			currentData = ""
+			continue
+		}
+		if strings.HasPrefix(line, "event: ") {
+			currentEvent = strings.TrimSpace(strings.TrimPrefix(line, "event: "))
+		}
+		if strings.HasPrefix(line, "data: ") {
+			currentData = strings.TrimSpace(strings.TrimPrefix(line, "data: "))
+		}
 	}
 }
 
