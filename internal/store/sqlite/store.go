@@ -29,11 +29,13 @@ type ProjectRecord struct {
 }
 
 type SyncStatus struct {
-	LatestIngestedAt string `json:"latest_ingested_at"`
-	LatestIndexedAt  string `json:"latest_indexed_at"`
-	LastRebuildAt    string `json:"last_rebuild_at"`
-	LastError        string `json:"last_error,omitempty"`
-	Stale            bool   `json:"stale"`
+	LatestIngestedAt string  `json:"latest_ingested_at"`
+	LatestIndexedAt  string  `json:"latest_indexed_at"`
+	LastRebuildAt    string  `json:"last_rebuild_at"`
+	LastError        string  `json:"last_error,omitempty"`
+	Stale            bool    `json:"stale"`
+	IndexingLagSecs  float64 `json:"indexing_lag_seconds"`
+	IndexingLagHuman string  `json:"indexing_lag,omitempty"`
 }
 
 type ResultWarning struct {
@@ -539,7 +541,29 @@ func (s *Store) GetSyncStatus() (SyncStatus, error) {
 		return SyncStatus{}, err
 	}
 	status.Stale = status.LatestIngestedAt != "" && status.LatestIndexedAt < status.LatestIngestedAt
+	status.IndexingLagSecs, status.IndexingLagHuman = indexingLag(status.LatestIngestedAt, status.LatestIndexedAt)
 	return status, nil
+}
+
+func indexingLag(latestIngestedAt string, latestIndexedAt string) (float64, string) {
+	if latestIngestedAt == "" || latestIndexedAt == "" || latestIndexedAt >= latestIngestedAt {
+		return 0, ""
+	}
+
+	ingestedAt, err := time.Parse(time.RFC3339Nano, latestIngestedAt)
+	if err != nil {
+		return 0, ""
+	}
+	indexedAt, err := time.Parse(time.RFC3339Nano, latestIndexedAt)
+	if err != nil {
+		return 0, ""
+	}
+
+	lag := ingestedAt.Sub(indexedAt)
+	if lag < 0 {
+		return 0, ""
+	}
+	return lag.Seconds(), lag.Round(time.Millisecond).String()
 }
 
 func (s *Store) ListLogs(filters query.LogFilters) (*LogList, error) {

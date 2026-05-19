@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"vigil/internal/config"
+	"vigil/internal/index"
 	"vigil/internal/ingest"
 	"vigil/internal/project"
 	"vigil/internal/query"
@@ -23,12 +24,13 @@ type Server struct {
 	cfg       config.Config
 	projects  *project.Service
 	ingest    *ingest.Service
+	indexer   *index.Worker
 	store     *sqlite.Store
 	retention *retention.Engine
 	staticFS  fs.FS
 }
 
-func New(cfg config.Config, projects *project.Service, ingestService *ingest.Service, store *sqlite.Store, retentionEngine *retention.Engine) (*Server, error) {
+func New(cfg config.Config, projects *project.Service, ingestService *ingest.Service, indexer *index.Worker, store *sqlite.Store, retentionEngine *retention.Engine) (*Server, error) {
 	staticFS, err := fs.Sub(webassets.Assets, "dist")
 	if err != nil {
 		return nil, fmt.Errorf("load embedded UI: %w", err)
@@ -38,6 +40,7 @@ func New(cfg config.Config, projects *project.Service, ingestService *ingest.Ser
 		cfg:       cfg,
 		projects:  projects,
 		ingest:    ingestService,
+		indexer:   indexer,
 		store:     store,
 		retention: retentionEngine,
 		staticFS:  staticFS,
@@ -68,6 +71,8 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"status":    "ok",
 		"app":       "vigil",
 		"sync":      status,
+		"ingest":    s.ingest.Stats(),
+		"index":     s.indexer.Status(),
 		"retention": s.retention.Status(),
 	})
 }
