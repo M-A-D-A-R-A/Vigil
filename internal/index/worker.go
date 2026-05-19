@@ -3,6 +3,7 @@ package index
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"vigil/internal/event"
@@ -16,12 +17,23 @@ const (
 )
 
 type Worker struct {
-	store   *sqlite.Store
-	raw     *raw.Store
-	queue   chan *event.StoredEvent
-	rebuild chan rebuildRequest
-	stop    chan struct{}
-	wg      sync.WaitGroup
+	store          *sqlite.Store
+	raw            *raw.Store
+	queue          chan *event.StoredEvent
+	rebuild        chan rebuildRequest
+	stop           chan struct{}
+	wg             sync.WaitGroup
+	enqueueDrops   atomic.Uint64
+	rebuildRunning atomic.Bool
+}
+
+type Status struct {
+	QueueDepth      int    `json:"queue_depth"`
+	QueueCapacity   int    `json:"queue_capacity"`
+	EnqueueDrops    uint64 `json:"enqueue_drops"`
+	RebuildPending  bool   `json:"rebuild_pending"`
+	RebuildRunning  bool   `json:"rebuild_running"`
+	RebuildQueueCap int    `json:"rebuild_queue_capacity"`
 }
 
 type rebuildRequest struct {
@@ -61,6 +73,7 @@ func (w *Worker) Enqueue(ev *event.StoredEvent) bool {
 	case w.queue <- ev:
 		return true
 	default:
+		w.enqueueDrops.Add(1)
 		w.ScheduleRebuild()
 		return false
 	}
@@ -70,6 +83,17 @@ func (w *Worker) ScheduleRebuild() {
 	select {
 	case w.rebuild <- rebuildRequest{}:
 	default:
+	}
+}
+
+func (w *Worker) Status() Status {
+	return Status{
+		QueueDepth:      len(w.queue),
+		QueueCapacity:   cap(w.queue),
+		EnqueueDrops:    w.enqueueDrops.Load(),
+		RebuildPending:  len(w.rebuild) > 0,
+		RebuildRunning:  w.rebuildRunning.Load(),
+		RebuildQueueCap: cap(w.rebuild),
 	}
 }
 
@@ -175,6 +199,9 @@ func (w *Worker) flushRemainingQueue() {
 }
 
 func (w *Worker) handleRebuild(request rebuildRequest) {
+	w.rebuildRunning.Store(true)
+	defer w.rebuildRunning.Store(false)
+
 	err := w.performRebuild(request)
 	if request.done != nil {
 		request.done <- err

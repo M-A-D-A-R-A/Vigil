@@ -12,6 +12,8 @@ export type SyncStatus = {
   last_rebuild_at: string;
   last_error?: string;
   stale: boolean;
+  indexing_lag_seconds: number;
+  indexing_lag?: string;
 };
 
 export type ResultWarning = {
@@ -50,6 +52,23 @@ export type RetentionStatus = {
   last_deleted_day_dirs: number;
   last_deleted_files: number;
   last_deleted_bytes: number;
+};
+
+export type IngestStatus = {
+  total_accepted: number;
+  rate_window_seconds: number;
+  recent_events: number;
+  events_per_second: number;
+  events_per_minute: number;
+};
+
+export type IndexStatus = {
+  queue_depth: number;
+  queue_capacity: number;
+  enqueue_drops: number;
+  rebuild_pending: boolean;
+  rebuild_running: boolean;
+  rebuild_queue_capacity: number;
 };
 
 export type EventRecord = {
@@ -191,5 +210,12 @@ export function getStats(params: Record<string, string>) {
 }
 
 export function getHealth() {
-  return request<{ status: string; app: string; sync: SyncStatus; retention: RetentionStatus }>("/api/health");
+  return request<{
+    status: string;
+    app: string;
+    sync: SyncStatus;
+    ingest: IngestStatus;
+    index: IndexStatus;
+    retention: RetentionStatus;
+  }>("/api/health");
 }

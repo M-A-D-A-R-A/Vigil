@@ -296,6 +296,21 @@ function formatRangeLabel(filters: LogFilterState, preset: QuickRange) {
   return `Last ${preset}`;
 }
 
+function formatMetricRate(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return "0";
+  if (value < 10) return value.toFixed(1);
+  return String(Math.round(value));
+}
+
+function formatIndexLag(syncStatus: { indexing_lag?: string; indexing_lag_seconds?: number; stale?: boolean } | null) {
+  if (!syncStatus?.stale) return "0s";
+  if (syncStatus.indexing_lag) return syncStatus.indexing_lag;
+  const seconds = syncStatus.indexing_lag_seconds ?? 0;
+  if (seconds < 1) return "<1s";
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  return `${Math.round(seconds / 60)}m`;
+}
+
 function timestampFallsInsideRange(timestamp: string, filters: LogFilterState) {
   const value = new Date(timestamp).getTime();
   const from = new Date(filters.from).getTime();
@@ -415,7 +430,6 @@ export default function App() {
     if (currentTab === "traces") return traces?.sync ?? null;
     return stats?.sync ?? null;
   }, [currentTab, logs?.sync, traces?.sync, stats?.sync]);
-  const latestIndexedAt = syncStatus?.latest_indexed_at || syncStatus?.latest_ingested_at || "";
 
   const currentWarnings = useMemo<ResultWarning[]>(() => {
     if (currentTab === "logs") return logs?.warnings ?? [];
@@ -429,6 +443,13 @@ export default function App() {
     return stats?.total_events ?? 0;
   }, [currentTab, logs?.total, traces?.total, stats?.total_events]);
 
+  const retentionStatus = health?.retention ?? null;
+  const healthSyncStatus = health?.sync ?? null;
+  const visibleSyncStatus = healthSyncStatus ?? syncStatus;
+  const indexStatus = health?.index ?? null;
+  const ingestStatus = health?.ingest ?? null;
+  const latestIndexedAt = visibleSyncStatus?.latest_indexed_at || visibleSyncStatus?.latest_ingested_at || "";
+
   const latestDataOutsideWindow =
     route.page === "project" &&
     !liveTail &&
@@ -436,7 +457,6 @@ export default function App() {
     latestIndexedAt !== "" &&
     !timestampFallsInsideRange(latestIndexedAt, logFilters);
 
-  const retentionStatus = health?.retention ?? null;
   const logFiltersRef = useRef(logFilters);
 
   useEffect(() => {
@@ -1115,9 +1135,16 @@ export default function App() {
 
         <div className="topbar-actions">
           {route.page === "project" ? (
-            <span className={`status-pill ${syncStatus?.stale ? "warn" : "ok"}`}>
-              {syncStatus?.stale ? "Indexing lag" : "Indexed"}
+            <span className={`status-pill ${visibleSyncStatus?.stale ? "warn" : "ok"}`}>
+              {visibleSyncStatus?.stale ? `Lag ${formatIndexLag(visibleSyncStatus)}` : "Indexed"}
             </span>
+          ) : null}
+          {route.page === "project" && indexStatus?.rebuild_running ? <span className="status-pill warn">Rebuild running</span> : null}
+          {route.page === "project" && !indexStatus?.rebuild_running && indexStatus?.rebuild_pending ? (
+            <span className="status-pill warn">Rebuild queued</span>
+          ) : null}
+          {route.page === "project" && indexStatus && indexStatus.enqueue_drops > 0 ? (
+            <span className="status-pill warn">{indexStatus.enqueue_drops} enqueue drops</span>
           ) : null}
           {retentionStatus?.enabled ? (
             <span className={`status-pill ${retentionStatus.dry_run ? "warn" : "ok"}`}>
@@ -1136,12 +1163,13 @@ export default function App() {
       {route.page === "project" && currentWarnings.length ? (
         <section className="alert warn">{currentWarnings.map((warning) => warning.message).join(" ")}</section>
       ) : null}
-      {route.page === "project" && syncStatus?.last_error ? (
-        <section className="alert error">{syncStatus.last_error}</section>
+      {route.page === "project" && visibleSyncStatus?.last_error ? (
+        <section className="alert error">{visibleSyncStatus.last_error}</section>
       ) : null}
-      {route.page === "project" && syncStatus?.stale ? (
+      {route.page === "project" && visibleSyncStatus?.stale ? (
         <section className="alert warn">
-          Raw ingest is ahead of indexed views. Latest ingested: {syncStatus.latest_ingested_at || "n/a"}.
+          Raw ingest is ahead of indexed views by {formatIndexLag(visibleSyncStatus)}. Latest ingested:{" "}
+          {visibleSyncStatus.latest_ingested_at || "n/a"}.
         </section>
       ) : null}
       {latestDataOutsideWindow ? (
@@ -1300,6 +1328,18 @@ export default function App() {
                   <div className="meta-tile">
                     <span>Window</span>
                     <strong>{formatRangeLabel(logFilters, timePreset)}</strong>
+                  </div>
+                  <div className="meta-tile">
+                    <span>Index lag</span>
+                    <strong>{formatIndexLag(visibleSyncStatus)}</strong>
+                  </div>
+                  <div className="meta-tile">
+                    <span>Queue</span>
+                    <strong>{indexStatus ? `${indexStatus.queue_depth}/${indexStatus.queue_capacity}` : "n/a"}</strong>
+                  </div>
+                  <div className="meta-tile">
+                    <span>Ingest rate</span>
+                    <strong>{ingestStatus ? `${formatMetricRate(ingestStatus.events_per_minute)}/min` : "n/a"}</strong>
                   </div>
                 </div>
               </div>

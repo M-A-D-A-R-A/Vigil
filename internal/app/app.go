@@ -35,7 +35,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	retentionGate := &sync.RWMutex{}
 	retentionEngine := retention.New(cfg.Retention, rawStore, worker, retentionGate)
 	ingestService := ingest.NewService(projectService, rawStore, db, worker, cfg.MaxEventBytes, retentionGate)
-	server, err := httpapi.New(cfg, projectService, ingestService, db, retentionEngine)
+	server, err := httpapi.New(cfg, projectService, ingestService, worker, db, retentionEngine)
 	if err != nil {
 		db.Close()
 		return nil, err

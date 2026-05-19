@@ -136,6 +136,41 @@ func TestUpsertEventsMixedBatchUpdatesReadModels(t *testing.T) {
 	}
 }
 
+func TestGetSyncStatusReportsIndexingLag(t *testing.T) {
+	store := openTestStore(t)
+	baseTS := time.Date(2026, 5, 8, 10, 0, 0, 0, time.UTC)
+	indexed := testEvent("evt_indexed", event.KindLog, baseTS, map[string]string{
+		"level":   "info",
+		"message": "indexed event",
+	})
+	indexedAt, err := time.Parse(time.RFC3339Nano, indexed.ReceivedAt)
+	if err != nil {
+		t.Fatalf("parse indexed received_at: %v", err)
+	}
+	latestIngestedAt := indexedAt.Add(5 * time.Second).UTC().Format(time.RFC3339Nano)
+
+	if _, _, err := store.UpsertEvents([]*event.StoredEvent{indexed}); err != nil {
+		t.Fatalf("upsert indexed event: %v", err)
+	}
+	if err := store.MarkLatestIngested(latestIngestedAt); err != nil {
+		t.Fatalf("mark latest ingested: %v", err)
+	}
+
+	status, err := store.GetSyncStatus()
+	if err != nil {
+		t.Fatalf("get sync status: %v", err)
+	}
+	if !status.Stale {
+		t.Fatal("expected stale sync status")
+	}
+	if status.IndexingLagSecs != 5 {
+		t.Fatalf("expected 5s indexing lag, got %v", status.IndexingLagSecs)
+	}
+	if status.IndexingLagHuman == "" {
+		t.Fatal("expected human-readable indexing lag")
+	}
+}
+
 func TestListLogsStructuredQueryCoreAndJSONFields(t *testing.T) {
 	store := openTestStore(t)
 	baseTS := time.Date(2026, 5, 8, 10, 0, 0, 0, time.UTC)

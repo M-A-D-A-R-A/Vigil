@@ -19,13 +19,25 @@ type Result struct {
 	IndexedAsync bool   `json:"indexed_async"`
 }
 
+type Stats struct {
+	TotalAccepted     uint64  `json:"total_accepted"`
+	RateWindowSeconds int     `json:"rate_window_seconds"`
+	RecentEvents      int     `json:"recent_events"`
+	EventsPerSecond   float64 `json:"events_per_second"`
+	EventsPerMinute   float64 `json:"events_per_minute"`
+}
+
 type Service struct {
-	projects *project.Service
-	raw      *raw.Store
-	db       *sqlite.Store
-	worker   *index.Worker
-	maxBytes int
-	gate     *sync.RWMutex
+	projects       *project.Service
+	raw            *raw.Store
+	db             *sqlite.Store
+	worker         *index.Worker
+	maxBytes       int
+	gate           *sync.RWMutex
+	statsMu        sync.Mutex
+	totalAccepted  uint64
+	recentIngests  []time.Time
+	rateWindowSize time.Duration
 }
 
 func NewService(projects *project.Service, rawStore *raw.Store, db *sqlite.Store, worker *index.Worker, maxBytes int, gate *sync.RWMutex) *Service {
@@ -36,12 +48,13 @@ func NewService(projects *project.Service, rawStore *raw.Store, db *sqlite.Store
 		gate = &sync.RWMutex{}
 	}
 	return &Service{
-		projects: projects,
-		raw:      rawStore,
-		db:       db,
-		worker:   worker,
-		maxBytes: maxBytes,
-		gate:     gate,
+		projects:       projects,
+		raw:            rawStore,
+		db:             db,
+		worker:         worker,
+		maxBytes:       maxBytes,
+		gate:           gate,
+		rateWindowSize: time.Minute,
 	}
 }
 
@@ -76,13 +89,58 @@ func (s *Service) Ingest(authorization string, payload []byte) (*Result, error) 
 		return nil, err
 	}
 
-	s.worker.Enqueue(ev)
+	s.recordAccepted(time.Now().UTC())
+	indexedAsync := s.worker.Enqueue(ev)
 
 	return &Result{
 		EventID:      ev.EventID,
 		ReceivedAt:   ev.ReceivedAt,
-		IndexedAsync: true,
+		IndexedAsync: indexedAsync,
 	}, nil
+}
+
+func (s *Service) Stats() Stats {
+	now := time.Now().UTC()
+	s.statsMu.Lock()
+	defer s.statsMu.Unlock()
+
+	s.pruneRecentLocked(now)
+	recent := len(s.recentIngests)
+	windowSeconds := int(s.rateWindowSize.Seconds())
+	if windowSeconds <= 0 {
+		windowSeconds = 60
+	}
+	eventsPerSecond := float64(recent) / float64(windowSeconds)
+
+	return Stats{
+		TotalAccepted:     s.totalAccepted,
+		RateWindowSeconds: windowSeconds,
+		RecentEvents:      recent,
+		EventsPerSecond:   eventsPerSecond,
+		EventsPerMinute:   eventsPerSecond * 60,
+	}
+}
+
+func (s *Service) recordAccepted(now time.Time) {
+	s.statsMu.Lock()
+	defer s.statsMu.Unlock()
+
+	s.totalAccepted++
+	s.recentIngests = append(s.recentIngests, now.UTC())
+	s.pruneRecentLocked(now.UTC())
+}
+
+func (s *Service) pruneRecentLocked(now time.Time) {
+	cutoff := now.Add(-s.rateWindowSize)
+	keepFrom := 0
+	for keepFrom < len(s.recentIngests) && s.recentIngests[keepFrom].Before(cutoff) {
+		keepFrom++
+	}
+	if keepFrom == 0 {
+		return
+	}
+	copy(s.recentIngests, s.recentIngests[keepFrom:])
+	s.recentIngests = s.recentIngests[:len(s.recentIngests)-keepFrom]
 }
 
 func parseBearerToken(header string) (string, error) {

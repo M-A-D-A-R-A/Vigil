@@ -15,7 +15,41 @@ Single-file curl reference:
 Returns service health plus:
 
 - indexing sync state
+- ingest visibility: accepted count and rolling ingest rate
+- index worker visibility: queue depth, enqueue drops, and rebuild pending/running state
 - retention mode and last sweep result
+
+Example health shape:
+
+```json
+{
+  "status": "ok",
+  "app": "vigil",
+  "sync": {
+    "latest_ingested_at": "2026-05-19T12:00:01Z",
+    "latest_indexed_at": "2026-05-19T12:00:00Z",
+    "last_rebuild_at": "2026-05-19T11:59:00Z",
+    "stale": true,
+    "indexing_lag_seconds": 1,
+    "indexing_lag": "1s"
+  },
+  "ingest": {
+    "total_accepted": 120,
+    "rate_window_seconds": 60,
+    "recent_events": 12,
+    "events_per_second": 0.2,
+    "events_per_minute": 12
+  },
+  "index": {
+    "queue_depth": 2,
+    "queue_capacity": 256,
+    "enqueue_drops": 0,
+    "rebuild_pending": false,
+    "rebuild_running": false,
+    "rebuild_queue_capacity": 1
+  }
+}
+```
 
 ## Projects
 
