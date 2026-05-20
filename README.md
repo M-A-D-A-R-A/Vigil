@@ -54,6 +54,19 @@ Run the printed `curl` command, then open `http://localhost:8080` and watch the 
 - `vigil use PROJECT_ID_OR_NAME` - switch active project
 - `vigil key rotate` - create and store a fresh ingest key for the active project
 - `vigil ingest-command` - print a ready-to-run curl command
+- `vigil logs` - inspect recent logs for the active project
+
+Useful log commands:
+
+```sh
+vigil logs --since 1h
+vigil logs --errors --q checkout
+vigil logs --query 'level = "error" && source = "api"'
+vigil logs --stats
+vigil logs --fields
+vigil logs --json
+vigil logs --tail
+```
 
 The CLI defaults to `http://localhost:8080`, then reuses the saved server URL. Set `VIGIL_CONFIG_PATH` to use a specific config file.
 
