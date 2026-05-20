@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -15,6 +16,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"vigil/internal/event"
 )
 
 const (
@@ -53,6 +56,58 @@ type projectCreateResponse struct {
 	IngestKey string  `json:"ingest_key"`
 }
 
+type logListResponse struct {
+	Events   []event.StoredEvent `json:"events"`
+	Page     int                 `json:"page"`
+	Limit    int                 `json:"limit"`
+	Total    int                 `json:"total"`
+	Warnings []resultWarning     `json:"warnings,omitempty"`
+}
+
+type resultWarning struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+type statsSummaryResponse struct {
+	TotalEvents int            `json:"total_events"`
+	ByKind      []countByValue `json:"by_kind"`
+	ByLevel     []countByValue `json:"by_level"`
+	TokenTotal  float64        `json:"token_total"`
+	CostTotal   float64        `json:"cost_total"`
+	Volume      []dailyVolume  `json:"volume"`
+}
+
+type countByValue struct {
+	Label string `json:"label"`
+	Count int    `json:"count"`
+}
+
+type dailyVolume struct {
+	Day   string `json:"day"`
+	Count int    `json:"count"`
+}
+
+type logsOptions struct {
+	ServerURL      string
+	Project        string
+	From           string
+	To             string
+	Since          time.Duration
+	Level          string
+	ErrorsOnly     bool
+	Name           string
+	Query          string
+	Structured     string
+	Page           int
+	Limit          int
+	JSON           bool
+	Stats          bool
+	Fields         bool
+	Tail           bool
+	IncludeDetails bool
+}
+
 func (r Runner) Run(ctx context.Context, args []string) error {
 	r = r.withDefaults()
 	if len(args) == 0 {
@@ -72,6 +127,8 @@ func (r Runner) Run(ctx context.Context, args []string) error {
 		return r.runKey(ctx, args[1:])
 	case "ingest-command":
 		return r.runIngestCommand(ctx, args[1:])
+	case "logs":
+		return r.runLogs(ctx, args[1:])
 	case "help", "-h", "--help":
 		return r.usage()
 	default:
@@ -113,6 +170,7 @@ Usage:
   vigil use [-server URL] [-regenerate-key] PROJECT_ID_OR_NAME
   vigil key rotate
   vigil ingest-command
+  vigil logs [-server URL] [-project ID_OR_NAME] [-since DURATION] [-level LEVEL] [-errors] [-q TEXT] [-query EXPR] [-json] [-stats] [-fields] [-tail]
 
 Environment:
   VIGIL_CONFIG_PATH  Override the local CLI config path.
@@ -396,6 +454,88 @@ func (r Runner) runIngestCommand(ctx context.Context, args []string) error {
 	return nil
 }
 
+func (r Runner) runLogs(ctx context.Context, args []string) error {
+	_, cfg, err := r.load()
+	if err != nil {
+		return err
+	}
+
+	fs := flag.NewFlagSet("logs", flag.ContinueOnError)
+	fs.SetOutput(r.Err)
+	opts := logsOptions{}
+	fs.StringVar(&opts.ServerURL, "server", firstNonEmpty(cfg.ServerURL, r.DefaultServerURL), "Vigil server URL")
+	fs.StringVar(&opts.Project, "project", firstNonEmpty(cfg.ActiveProjectID, cfg.ActiveProjectName), "project ID or name")
+	fs.DurationVar(&opts.Since, "since", time.Hour, "relative time window such as 15m, 1h, or 24h")
+	fs.StringVar(&opts.From, "from", "", "RFC3339 window start; overrides -since")
+	fs.StringVar(&opts.To, "to", "", "RFC3339 window end; defaults to now")
+	fs.StringVar(&opts.Level, "level", "", "log level filter")
+	fs.BoolVar(&opts.ErrorsOnly, "errors", false, "shortcut for -level error")
+	fs.StringVar(&opts.Name, "name", "", "exact event name filter")
+	fs.StringVar(&opts.Query, "q", "", "full-text search")
+	fs.StringVar(&opts.Structured, "query", "", "structured query expression")
+	fs.IntVar(&opts.Page, "page", 1, "result page")
+	fs.IntVar(&opts.Limit, "limit", 50, "maximum logs to return")
+	fs.BoolVar(&opts.JSON, "json", false, "print JSON")
+	fs.BoolVar(&opts.Stats, "stats", false, "print stats for the selected window")
+	fs.BoolVar(&opts.Fields, "fields", false, "discover top-level attrs/body fields in matching logs")
+	fs.BoolVar(&opts.Tail, "tail", false, "stream matching logs with Server-Sent Events")
+	fs.BoolVar(&opts.IncludeDetails, "details", false, "include attrs/body JSON in text log output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("logs does not accept positional arguments")
+	}
+
+	opts.ServerURL, err = normalizeServerURL(opts.ServerURL)
+	if err != nil {
+		return err
+	}
+	projectID, err := r.resolveProjectID(ctx, opts.ServerURL, opts.Project, cfg)
+	if err != nil {
+		return err
+	}
+	values, err := logsQueryValues(opts, projectID, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+
+	switch {
+	case opts.Stats:
+		stats, err := r.fetchLogStats(ctx, opts.ServerURL, values)
+		if err != nil {
+			return err
+		}
+		if opts.JSON {
+			return writePrettyJSON(r.Out, stats)
+		}
+		printLogStats(r.Out, stats)
+		return nil
+	case opts.Fields:
+		logs, err := r.fetchLogs(ctx, opts.ServerURL, values)
+		if err != nil {
+			return err
+		}
+		if opts.JSON {
+			return writePrettyJSON(r.Out, discoverLogFields(logs.Events))
+		}
+		printLogFields(r.Out, discoverLogFields(logs.Events))
+		return nil
+	case opts.Tail:
+		return r.tailLogs(ctx, opts.ServerURL, values, opts)
+	default:
+		logs, err := r.fetchLogs(ctx, opts.ServerURL, values)
+		if err != nil {
+			return err
+		}
+		if opts.JSON {
+			return writePrettyJSON(r.Out, logs)
+		}
+		printLogs(r.Out, logs, opts)
+		return nil
+	}
+}
+
 func (r Runner) load() (string, Config, error) {
 	cfgPath, err := configPath(r.Getenv)
 	if err != nil {
@@ -542,6 +682,171 @@ func ensureGitignoreIgnoresDotEnv() error {
 	return nil
 }
 
+func (r Runner) resolveProjectID(ctx context.Context, serverURL, wanted string, cfg Config) (string, error) {
+	wanted = strings.TrimSpace(wanted)
+	if wanted == "" {
+		return "", errors.New("no active project; run `vigil init` first or pass -project")
+	}
+	if wanted == cfg.ActiveProjectID || wanted == cfg.ActiveProjectName {
+		if cfg.ActiveProjectID == "" {
+			return "", errors.New("no active project; run `vigil init` first or pass -project")
+		}
+		return cfg.ActiveProjectID, nil
+	}
+
+	projects, err := r.listProjects(ctx, serverURL)
+	if err != nil {
+		return "", err
+	}
+	selected, ok := findProject(projects, wanted)
+	if !ok {
+		return "", fmt.Errorf("project %q not found", wanted)
+	}
+	return selected.ID, nil
+}
+
+func logsQueryValues(opts logsOptions, projectID string, now time.Time) (url.Values, error) {
+	values := url.Values{}
+	values.Set("project_id", projectID)
+
+	to := now.UTC()
+	if strings.TrimSpace(opts.To) != "" {
+		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(opts.To))
+		if err != nil {
+			return nil, fmt.Errorf("invalid to timestamp")
+		}
+		to = parsed.UTC()
+	}
+	from := to.Add(-opts.Since)
+	if opts.Since <= 0 {
+		return nil, errors.New("since must be greater than 0")
+	}
+	if strings.TrimSpace(opts.From) != "" {
+		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(opts.From))
+		if err != nil {
+			return nil, fmt.Errorf("invalid from timestamp")
+		}
+		from = parsed.UTC()
+	}
+	if from.After(to) {
+		return nil, errors.New("from must be before to")
+	}
+	values.Set("from", from.Format(time.RFC3339))
+	values.Set("to", to.Format(time.RFC3339))
+
+	level := strings.ToLower(strings.TrimSpace(opts.Level))
+	if opts.ErrorsOnly {
+		level = "error"
+	}
+	if level != "" {
+		values.Set("level", level)
+	}
+	if name := strings.TrimSpace(opts.Name); name != "" {
+		values.Set("name", name)
+	}
+	if q := strings.TrimSpace(opts.Query); q != "" {
+		values.Set("q", q)
+	}
+	if structured := strings.TrimSpace(opts.Structured); structured != "" {
+		values.Set("query", structured)
+	}
+	if opts.Page > 1 {
+		values.Set("page", fmt.Sprint(opts.Page))
+	}
+	if opts.Limit > 0 {
+		values.Set("limit", fmt.Sprint(opts.Limit))
+	}
+	return values, nil
+}
+
+func (r Runner) fetchLogs(ctx context.Context, serverURL string, values url.Values) (*logListResponse, error) {
+	var response logListResponse
+	if err := r.getJSON(ctx, serverURL+"/api/logs?"+values.Encode(), &response); err != nil {
+		return nil, err
+	}
+	return &response, nil
+}
+
+func (r Runner) fetchLogStats(ctx context.Context, serverURL string, values url.Values) (*statsSummaryResponse, error) {
+	statsValues := url.Values{}
+	for _, key := range []string{"project_id", "from", "to"} {
+		if value := strings.TrimSpace(values.Get(key)); value != "" {
+			statsValues.Set(key, value)
+		}
+	}
+	var response statsSummaryResponse
+	if err := r.getJSON(ctx, serverURL+"/api/stats?"+statsValues.Encode(), &response); err != nil {
+		return nil, err
+	}
+	return &response, nil
+}
+
+func (r Runner) tailLogs(ctx context.Context, serverURL string, values url.Values, opts logsOptions) error {
+	requestURL := serverURL + "/api/logs/tail?" + values.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "text/event-stream")
+
+	client := *r.Client
+	client.Timeout = 0
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= http.StatusBadRequest {
+		return fmt.Errorf("GET %s returned %d", requestURL, resp.StatusCode)
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	var eventName string
+	var dataLines []string
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			if err := printSSELogEvent(r.Out, eventName, strings.Join(dataLines, "\n"), opts); err != nil {
+				return err
+			}
+			eventName = ""
+			dataLines = nil
+			continue
+		}
+		switch {
+		case strings.HasPrefix(line, "event:"):
+			eventName = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+		case strings.HasPrefix(line, "data:"):
+			dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+		}
+	}
+	return scanner.Err()
+}
+
+func printSSELogEvent(w io.Writer, eventName, data string, opts logsOptions) error {
+	if strings.TrimSpace(data) == "" || eventName == "ping" {
+		return nil
+	}
+	if eventName == "error" {
+		return fmt.Errorf("tail stream error: %s", data)
+	}
+	var ev event.StoredEvent
+	if err := json.Unmarshal([]byte(data), &ev); err != nil {
+		return fmt.Errorf("decode tail event: %w", err)
+	}
+	if opts.JSON {
+		line, err := json.Marshal(ev)
+		if err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintln(w, string(line))
+		return nil
+	}
+	printLogEvent(w, ev, opts)
+	return nil
+}
+
 func (r Runner) checkHealth(ctx context.Context, serverURL string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, serverURL+"/api/health", nil)
 	if err != nil {
@@ -591,7 +896,7 @@ func (r Runner) getJSON(ctx context.Context, requestURL string, target any) erro
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= http.StatusBadRequest {
-		return fmt.Errorf("GET %s returned %d", requestURL, resp.StatusCode)
+		return responseError(http.MethodGet, requestURL, resp)
 	}
 	if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
 		return fmt.Errorf("decode %s: %w", requestURL, err)
@@ -616,12 +921,26 @@ func (r Runner) postJSON(ctx context.Context, requestURL string, payload any, ta
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= http.StatusBadRequest {
-		return fmt.Errorf("POST %s returned %d", requestURL, resp.StatusCode)
+		return responseError(http.MethodPost, requestURL, resp)
 	}
 	if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
 		return fmt.Errorf("decode %s: %w", requestURL, err)
 	}
 	return nil
+}
+
+func responseError(method string, requestURL string, resp *http.Response) error {
+	var payload struct {
+		Error string `json:"error"`
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if len(body) > 0 {
+		_ = json.Unmarshal(body, &payload)
+	}
+	if payload.Error != "" {
+		return fmt.Errorf("%s %s returned %d: %s", method, requestURL, resp.StatusCode, payload.Error)
+	}
+	return fmt.Errorf("%s %s returned %d", method, requestURL, resp.StatusCode)
 }
 
 func findProject(projects []project, wanted string) (project, bool) {
@@ -672,6 +991,161 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func writePrettyJSON(w io.Writer, value any) error {
+	content, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintln(w, string(content))
+	return nil
+}
+
+func printLogs(w io.Writer, logs *logListResponse, opts logsOptions) {
+	if len(logs.Events) == 0 {
+		_, _ = fmt.Fprintln(w, "No matching logs.")
+		return
+	}
+	for _, ev := range logs.Events {
+		printLogEvent(w, ev, opts)
+	}
+	_, _ = fmt.Fprintf(w, "\nShowing %d of %d matching logs (page %d, limit %d).\n", len(logs.Events), logs.Total, logs.Page, logs.Limit)
+	for _, warning := range logs.Warnings {
+		_, _ = fmt.Fprintf(w, "Warning: %s\n", warning.Message)
+	}
+}
+
+func printLogEvent(w io.Writer, ev event.StoredEvent, opts logsOptions) {
+	level := strings.ToUpper(strings.TrimSpace(ev.Level))
+	if level == "" {
+		level = "-"
+	}
+	message := eventMessage(ev)
+	_, _ = fmt.Fprintf(w, "%s  %-5s  %-18s  %-28s  %s\n", compactTimestamp(ev.TS), level, ev.Source, ev.Name, message)
+	if opts.IncludeDetails {
+		if attrs := compactRawJSON(ev.Attrs); attrs != "{}" {
+			_, _ = fmt.Fprintf(w, "  attrs: %s\n", attrs)
+		}
+		if body := compactRawJSON(ev.Body); body != "" && body != "null" {
+			_, _ = fmt.Fprintf(w, "  body:  %s\n", body)
+		}
+	}
+}
+
+func eventMessage(ev event.StoredEvent) string {
+	if len(ev.Body) == 0 {
+		return ""
+	}
+	var object map[string]any
+	if err := json.Unmarshal(ev.Body, &object); err == nil {
+		if message, ok := object["message"].(string); ok {
+			return message
+		}
+		if errorValue, ok := object["error"].(string); ok {
+			return errorValue
+		}
+	}
+	var text string
+	if err := json.Unmarshal(ev.Body, &text); err == nil {
+		return text
+	}
+	body := compactRawJSON(ev.Body)
+	if body == "null" {
+		return ""
+	}
+	return body
+}
+
+func compactTimestamp(raw string) string {
+	parsed, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		return raw
+	}
+	return parsed.UTC().Format("2006-01-02 15:04:05")
+}
+
+func compactRawJSON(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var out bytes.Buffer
+	if err := json.Compact(&out, raw); err != nil {
+		return string(raw)
+	}
+	return out.String()
+}
+
+func printLogStats(w io.Writer, stats *statsSummaryResponse) {
+	_, _ = fmt.Fprintf(w, "Total events: %d\n", stats.TotalEvents)
+	if len(stats.ByKind) > 0 {
+		_, _ = fmt.Fprintln(w, "\nBy kind:")
+		printCounts(w, stats.ByKind)
+	}
+	if len(stats.ByLevel) > 0 {
+		_, _ = fmt.Fprintln(w, "\nBy level:")
+		printCounts(w, stats.ByLevel)
+	}
+	if stats.TokenTotal != 0 || stats.CostTotal != 0 {
+		_, _ = fmt.Fprintf(w, "\nTokens: %.0f\nCost: %.4f\n", stats.TokenTotal, stats.CostTotal)
+	}
+}
+
+func printCounts(w io.Writer, counts []countByValue) {
+	for _, item := range counts {
+		label := item.Label
+		if label == "" {
+			label = "(empty)"
+		}
+		_, _ = fmt.Fprintf(w, "  %-18s %d\n", label, item.Count)
+	}
+}
+
+type fieldCount struct {
+	Field string `json:"field"`
+	Count int    `json:"count"`
+}
+
+func discoverLogFields(events []event.StoredEvent) []fieldCount {
+	counts := map[string]int{}
+	for _, ev := range events {
+		addJSONFieldCounts(counts, "attrs", ev.Attrs)
+		addJSONFieldCounts(counts, "body", ev.Body)
+	}
+	fields := make([]fieldCount, 0, len(counts))
+	for field, count := range counts {
+		fields = append(fields, fieldCount{Field: field, Count: count})
+	}
+	sort.Slice(fields, func(i, j int) bool {
+		if fields[i].Count == fields[j].Count {
+			return fields[i].Field < fields[j].Field
+		}
+		return fields[i].Count > fields[j].Count
+	})
+	return fields
+}
+
+func addJSONFieldCounts(counts map[string]int, prefix string, raw json.RawMessage) {
+	var object map[string]any
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return
+	}
+	for key := range object {
+		key = strings.TrimSpace(key)
+		if key != "" {
+			counts[prefix+"."+key]++
+		}
+	}
+}
+
+func printLogFields(w io.Writer, fields []fieldCount) {
+	if len(fields) == 0 {
+		_, _ = fmt.Fprintln(w, "No fields found in matching logs.")
+		return
+	}
+	for _, field := range fields {
+		_, _ = fmt.Fprintf(w, "%-32s %d\n", field.Field, field.Count)
+	}
 }
 
 func printActiveSummary(w io.Writer, cfgPath string, cfg Config) {
