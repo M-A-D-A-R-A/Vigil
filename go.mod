@@ -4,6 +4,8 @@ go 1.26.2
 
 require (
 	github.com/chromedp/chromedp v0.15.1
+	go.opentelemetry.io/proto/otlp v1.10.0
+	google.golang.org/protobuf v1.36.11
 	modernc.org/sqlite v1.50.0
 )
 

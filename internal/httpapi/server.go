@@ -10,10 +10,16 @@ import (
 	"strings"
 	"time"
 
+	logsv1 "go.opentelemetry.io/proto/otlp/logs/v1"
+	metricsv1 "go.opentelemetry.io/proto/otlp/metrics/v1"
+	tracev1 "go.opentelemetry.io/proto/otlp/trace/v1"
+	"google.golang.org/protobuf/proto"
+
 	"vigil/internal/config"
 	"vigil/internal/event"
 	"vigil/internal/index"
 	"vigil/internal/ingest"
+	"vigil/internal/otlp"
 	"vigil/internal/project"
 	"vigil/internal/query"
 	"vigil/internal/retention"
@@ -58,6 +64,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/projects", s.handleListProjects)
 	mux.HandleFunc("POST /api/projects/{id}/keys/regenerate", s.handleRegenerateProjectKey)
 	mux.HandleFunc("POST /api/ingest", s.handleIngest)
+	mux.HandleFunc("POST /v1/logs", s.handleOTLPLogs)
+	mux.HandleFunc("POST /v1/traces", s.handleOTLPTraces)
+	mux.HandleFunc("POST /v1/metrics", s.handleOTLPMetrics)
 	mux.HandleFunc("GET /api/logs", s.handleLogs)
 	mux.HandleFunc("GET /api/logs/tail", s.handleLogsTail)
 	mux.HandleFunc("GET /api/traces", s.handleTraces)
@@ -130,14 +139,93 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.ingest.Ingest(r.Header.Get("Authorization"), payload)
 	if err != nil {
-		status := http.StatusBadRequest
-		if strings.Contains(strings.ToLower(err.Error()), "authorization") || strings.Contains(strings.ToLower(err.Error()), "ingest key") {
-			status = http.StatusUnauthorized
-		}
-		writeError(w, status, err)
+		s.writeIngestError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, result)
+}
+
+func (s *Server) handleOTLPLogs(w http.ResponseWriter, r *http.Request) {
+	// ExportLogsServiceRequest and LogsData share the same field layout for resource_logs.
+	// Decoding into LogsData keeps the receiver HTTP-only and avoids gRPC gateway deps.
+	var req logsv1.LogsData
+	if !s.readOTLPRequest(w, r, &req) {
+		return
+	}
+	envelopes, err := otlp.LogsToEnvelopes(&req, time.Now().UTC())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if _, err := s.ingest.IngestEnvelopes(r.Header.Get("Authorization"), envelopes); err != nil {
+		s.writeIngestError(w, err)
+		return
+	}
+	writeOTLPProto(w, nil)
+}
+
+func (s *Server) handleOTLPTraces(w http.ResponseWriter, r *http.Request) {
+	// ExportTraceServiceRequest and TracesData share the same field layout for resource_spans.
+	// Decoding into TracesData keeps the receiver HTTP-only and avoids gRPC gateway deps.
+	var req tracev1.TracesData
+	if !s.readOTLPRequest(w, r, &req) {
+		return
+	}
+	envelopes, err := otlp.TracesToEnvelopes(&req, time.Now().UTC())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if _, err := s.ingest.IngestEnvelopes(r.Header.Get("Authorization"), envelopes); err != nil {
+		s.writeIngestError(w, err)
+		return
+	}
+	writeOTLPProto(w, nil)
+}
+
+func (s *Server) handleOTLPMetrics(w http.ResponseWriter, r *http.Request) {
+	// ExportMetricsServiceRequest and MetricsData share the same field layout for resource_metrics.
+	// Decoding into MetricsData keeps the receiver HTTP-only and avoids gRPC gateway deps.
+	var req metricsv1.MetricsData
+	if !s.readOTLPRequest(w, r, &req) {
+		return
+	}
+	envelopes, err := otlp.MetricsToEnvelopes(&req, time.Now().UTC())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if _, err := s.ingest.IngestEnvelopes(r.Header.Get("Authorization"), envelopes); err != nil {
+		s.writeIngestError(w, err)
+		return
+	}
+	writeOTLPProto(w, nil)
+}
+
+func (s *Server) readOTLPRequest(w http.ResponseWriter, r *http.Request, msg proto.Message) bool {
+	defer r.Body.Close()
+	payload, err := io.ReadAll(io.LimitReader(r.Body, int64(s.cfg.MaxEventBytes)+1))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("read payload: %w", err))
+		return false
+	}
+	if len(payload) > s.cfg.MaxEventBytes {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("payload too large"))
+		return false
+	}
+	if err := proto.Unmarshal(payload, msg); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid OTLP protobuf payload: %w", err))
+		return false
+	}
+	return true
+}
+
+func (s *Server) writeIngestError(w http.ResponseWriter, err error) {
+	status := http.StatusBadRequest
+	if isAuthError(err) {
+		status = http.StatusUnauthorized
+	}
+	writeError(w, status, err)
 }
 
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
@@ -313,10 +401,30 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	_ = json.NewEncoder(w).Encode(payload)
 }
 
+func writeOTLPProto(w http.ResponseWriter, payload proto.Message) {
+	var raw []byte
+	if payload != nil {
+		var err error
+		raw, err = proto.Marshal(payload)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Errorf("marshal OTLP response: %w", err))
+			return
+		}
+	}
+	w.Header().Set("Content-Type", "application/x-protobuf")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(raw)
+}
+
 func writeError(w http.ResponseWriter, status int, err error) {
 	writeJSON(w, status, map[string]any{
 		"error": err.Error(),
 	})
+}
+
+func isAuthError(err error) bool {
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "authorization") || strings.Contains(lower, "ingest key")
 }
 
 func writeQueryError(w http.ResponseWriter, err *query.QueryError) {

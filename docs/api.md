@@ -78,6 +78,8 @@ Rotate the ingest key for a project and return the new plaintext key once.
 
 ## Ingest
 
+Vigil's native JSON ingest remains the simplest first-run path.
+
 `POST /api/ingest`
 
 Headers:
@@ -104,6 +106,30 @@ Body:
   }
 }
 ```
+
+### OpenTelemetry OTLP/HTTP
+
+Vigil can also receive OTLP/HTTP protobuf payloads from standard OpenTelemetry exporters:
+
+- `POST /v1/logs`
+- `POST /v1/traces`
+- `POST /v1/metrics`
+
+Headers:
+
+- `Authorization: Bearer <ingest_key>`
+- `Content-Type: application/x-protobuf`
+
+Most OpenTelemetry SDKs/exporters can be pointed at Vigil with environment variables:
+
+```env
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:8080
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer vigil_...
+OTEL_SERVICE_NAME=my-app
+```
+
+The authenticated ingest key selects the Vigil project. OTLP resource field `service.name` becomes the Vigil `source`; OTLP logs become `kind=log`, spans become `kind=trace`, and metric data points become `kind=metric`. OpenTelemetry resource, scope, and signal attributes are preserved under `attrs.otel`, while signal-level attributes are also promoted into top-level `attrs` for normal Vigil filtering and search.
 
 ## Query APIs
 
