@@ -57,6 +57,10 @@ func ParseAndNormalize(payload []byte, projectID string, now time.Time) (*Stored
 		return nil, fmt.Errorf("invalid JSON payload: %w", err)
 	}
 
+	return NormalizeEnvelope(env, projectID, now)
+}
+
+func NormalizeEnvelope(env Envelope, projectID string, now time.Time) (*StoredEvent, error) {
 	if err := validateEnvelope(&env, projectID); err != nil {
 		return nil, err
 	}

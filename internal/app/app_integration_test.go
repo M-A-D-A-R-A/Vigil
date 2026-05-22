@@ -5,12 +5,20 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"mime"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
 	"time"
+
+	commonv1 "go.opentelemetry.io/proto/otlp/common/v1"
+	logsv1 "go.opentelemetry.io/proto/otlp/logs/v1"
+	metricsv1 "go.opentelemetry.io/proto/otlp/metrics/v1"
+	resourcev1 "go.opentelemetry.io/proto/otlp/resource/v1"
+	tracev1 "go.opentelemetry.io/proto/otlp/trace/v1"
+	"google.golang.org/protobuf/proto"
 
 	"vigil/internal/config"
 )
@@ -113,6 +121,156 @@ func TestProjectIngestAndQueries(t *testing.T) {
 	respOld.Body.Close()
 	if respOld.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expected 401 for old key, got %d", respOld.StatusCode)
+	}
+}
+
+func TestOTLPHTTPIngestEndpoints(t *testing.T) {
+	cfg := config.Config{
+		Addr:            ":0",
+		DataDir:         t.TempDir(),
+		MaxEventBytes:   1 << 20,
+		SegmentMaxBytes: 10 * 1024 * 1024,
+	}
+
+	app, err := New(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+	defer app.Close()
+
+	server := httptest.NewServer(app.Handler)
+	defer server.Close()
+
+	createResp := map[string]any{}
+	postJSON(t, server.URL+"/api/projects", map[string]string{"name": "otlp-app"}, &createResp)
+	project := createResp["project"].(map[string]any)
+	projectID := project["id"].(string)
+	key := createResp["ingest_key"].(string)
+
+	baseTS := time.Now().UTC().Add(-time.Minute)
+	logTraceID := []byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}
+	logSpanID := []byte{1, 2, 3, 4, 5, 6, 7, 8}
+	postOTLPProto(t, server.URL+"/v1/logs", key, &logsv1.LogsData{
+		ResourceLogs: []*logsv1.ResourceLogs{{
+			Resource: otelResource("checkout-api"),
+			ScopeLogs: []*logsv1.ScopeLogs{{
+				Scope: &commonv1.InstrumentationScope{Name: "test-logger", Version: "1.0.0"},
+				LogRecords: []*logsv1.LogRecord{{
+					TimeUnixNano:   uint64(baseTS.UnixNano()),
+					SeverityText:   "ERROR",
+					SeverityNumber: logsv1.SeverityNumber_SEVERITY_NUMBER_ERROR,
+					EventName:      "payment.failed",
+					TraceId:        logTraceID,
+					SpanId:         logSpanID,
+					Body:           stringAny("payment failed"),
+					Attributes: []*commonv1.KeyValue{
+						stringKV("route", "/checkout"),
+						intKV("status", 502),
+					},
+				}},
+			}},
+		}},
+	})
+
+	traceID := []byte{15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0}
+	spanID := []byte{8, 7, 6, 5, 4, 3, 2, 1}
+	postOTLPProto(t, server.URL+"/v1/traces", key, &tracev1.TracesData{
+		ResourceSpans: []*tracev1.ResourceSpans{{
+			Resource: otelResource("checkout-api"),
+			ScopeSpans: []*tracev1.ScopeSpans{{
+				Scope: &commonv1.InstrumentationScope{Name: "test-tracer", Version: "1.0.0"},
+				Spans: []*tracev1.Span{{
+					TraceId:           traceID,
+					SpanId:            spanID,
+					Name:              "POST /checkout",
+					Kind:              tracev1.Span_SPAN_KIND_SERVER,
+					StartTimeUnixNano: uint64(baseTS.Add(time.Second).UnixNano()),
+					EndTimeUnixNano:   uint64(baseTS.Add(150 * time.Millisecond).Add(time.Second).UnixNano()),
+					Attributes: []*commonv1.KeyValue{
+						stringKV("http.route", "/checkout"),
+					},
+					Status: &tracev1.Status{
+						Code:    tracev1.Status_STATUS_CODE_ERROR,
+						Message: "upstream payment failed",
+					},
+				}},
+			}},
+		}},
+	})
+
+	postOTLPProto(t, server.URL+"/v1/metrics", key, &metricsv1.MetricsData{
+		ResourceMetrics: []*metricsv1.ResourceMetrics{{
+			Resource: otelResource("checkout-api"),
+			ScopeMetrics: []*metricsv1.ScopeMetrics{{
+				Scope: &commonv1.InstrumentationScope{Name: "test-meter", Version: "1.0.0"},
+				Metrics: []*metricsv1.Metric{{
+					Name: "checkout.requests",
+					Unit: "1",
+					Data: &metricsv1.Metric_Gauge{Gauge: &metricsv1.Gauge{
+						DataPoints: []*metricsv1.NumberDataPoint{{
+							TimeUnixNano: uint64(baseTS.Add(2 * time.Second).UnixNano()),
+							Attributes: []*commonv1.KeyValue{
+								stringKV("route", "/checkout"),
+							},
+							Value: &metricsv1.NumberDataPoint_AsInt{AsInt: 42},
+						}},
+					}},
+				}},
+			}},
+		}},
+	})
+
+	waitFor(t, 2*time.Second, func() bool {
+		result := map[string]any{}
+		getJSON(t, server.URL+"/api/logs?project_id="+projectID+"&kind=metric", &result)
+		return int(result["total"].(float64)) == 1
+	})
+
+	logs := map[string]any{}
+	getJSON(t, server.URL+"/api/logs?project_id="+projectID+"&kind=log", &logs)
+	if int(logs["total"].(float64)) != 1 {
+		t.Fatalf("expected 1 OTLP log event, got %v", logs["total"])
+	}
+	logEvent := logs["events"].([]any)[0].(map[string]any)
+	if logEvent["source"] != "checkout-api" {
+		t.Fatalf("expected service.name source, got %v", logEvent["source"])
+	}
+	if logEvent["level"] != "error" {
+		t.Fatalf("expected error level, got %v", logEvent["level"])
+	}
+	if logEvent["trace_id"] != "000102030405060708090a0b0c0d0e0f" {
+		t.Fatalf("expected preserved log trace id, got %v", logEvent["trace_id"])
+	}
+	logBody := logEvent["body"].(map[string]any)
+	if logBody["message"] != "payment failed" {
+		t.Fatalf("expected OTLP log body message, got %v", logBody)
+	}
+	logAttrs := logEvent["attrs"].(map[string]any)
+	if logAttrs["route"] != "/checkout" {
+		t.Fatalf("expected promoted log attrs, got %v", logAttrs)
+	}
+
+	traces := map[string]any{}
+	getJSON(t, server.URL+"/api/traces?project_id="+projectID, &traces)
+	if int(traces["total"].(float64)) != 2 {
+		t.Fatalf("expected log and span trace summaries, got %v", traces["total"])
+	}
+
+	metrics := map[string]any{}
+	getJSON(t, server.URL+"/api/logs?project_id="+projectID+"&kind=metric", &metrics)
+	metricEvent := metrics["events"].([]any)[0].(map[string]any)
+	if metricEvent["name"] != "checkout.requests" {
+		t.Fatalf("expected metric name, got %v", metricEvent["name"])
+	}
+	metricBody := metricEvent["body"].(map[string]any)
+	if metricBody["value"] != float64(42) {
+		t.Fatalf("expected metric value 42, got %v", metricBody)
+	}
+
+	stats := map[string]any{}
+	getJSON(t, server.URL+"/api/stats?project_id="+projectID, &stats)
+	if int(stats["total_events"].(float64)) != 3 {
+		t.Fatalf("expected 3 total OTLP-backed events, got %v", stats["total_events"])
 	}
 }
 
@@ -554,6 +712,68 @@ func postIngestResult(t *testing.T, baseURL, key string, payload map[string]any)
 		t.Fatalf("decode ingest response: %v", err)
 	}
 	return result
+}
+
+func postOTLPProto(t *testing.T, requestURL, key string, payload proto.Message) {
+	t.Helper()
+	body, err := proto.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal OTLP payload: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, requestURL, bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("new OTLP request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Content-Type", "application/x-protobuf")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("OTLP request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from OTLP ingest, got %d", resp.StatusCode)
+	}
+	mediaType, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	if err != nil {
+		t.Fatalf("parse OTLP response content type: %v", err)
+	}
+	if mediaType != "application/x-protobuf" {
+		t.Fatalf("expected protobuf response, got %q", resp.Header.Get("Content-Type"))
+	}
+}
+
+func otelResource(serviceName string) *resourcev1.Resource {
+	return &resourcev1.Resource{
+		Attributes: []*commonv1.KeyValue{
+			stringKV("service.name", serviceName),
+		},
+	}
+}
+
+func stringKV(key, value string) *commonv1.KeyValue {
+	return &commonv1.KeyValue{
+		Key: key,
+		Value: &commonv1.AnyValue{
+			Value: &commonv1.AnyValue_StringValue{StringValue: value},
+		},
+	}
+}
+
+func intKV(key string, value int64) *commonv1.KeyValue {
+	return &commonv1.KeyValue{
+		Key: key,
+		Value: &commonv1.AnyValue{
+			Value: &commonv1.AnyValue_IntValue{IntValue: value},
+		},
+	}
+}
+
+func stringAny(value string) *commonv1.AnyValue {
+	return &commonv1.AnyValue{
+		Value: &commonv1.AnyValue_StringValue{StringValue: value},
+	}
 }
 
 func readSSEPayload(t *testing.T, reader *bufio.Reader, wantEvent string) map[string]any {

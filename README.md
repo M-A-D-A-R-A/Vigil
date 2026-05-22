@@ -44,6 +44,17 @@ vigil ingest-command
 
 Run the printed `curl` command, then open `http://localhost:8080` and watch the event appear in Logs, Traces, and Stats.
 
+Apps that already use OpenTelemetry can also send OTLP/HTTP protobuf payloads to `/v1/logs`, `/v1/traces`, and `/v1/metrics` with the same Vigil ingest key. Native JSON ingest remains the easiest manual path.
+
+Example OpenTelemetry exporter environment:
+
+```env
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:8080
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer vigil_...
+OTEL_SERVICE_NAME=my-app
+```
+
 ## Using The CLI
 
 - `vigil` - start the server
