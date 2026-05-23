@@ -51,7 +51,7 @@ Example OpenTelemetry exporter environment:
 ```env
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:8080
 OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
-OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer vigil_...
+OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20vigil_...
 OTEL_SERVICE_NAME=my-app
 ```
 
@@ -103,6 +103,12 @@ The Python SDK is published on PyPI as `vigil-observability`. It reads the env v
 pip install vigil-observability
 ```
 
+For Python apps that already use OpenTelemetry:
+
+```sh
+pip install "vigil-observability[otel]"
+```
+
 Package page: <https://pypi.org/project/vigil-observability/>
 
 ```python
@@ -112,6 +118,14 @@ vigil = VigilClient.from_env()
 vigil.log("request.completed", message="request completed", attrs={"route": "/health"})
 vigil.trace("llm.completed", trace_id="trace-123", attrs={"total_tokens": 42})
 vigil.metric("queue.depth", value=7, unit="count", attrs={"queue": "jobs"})
+```
+
+OpenTelemetry helper:
+
+```python
+from vigil_sdk import configure_vigil_otel
+
+configure_vigil_otel(service_name="my-app")
 ```
 
 ## Data Storage
