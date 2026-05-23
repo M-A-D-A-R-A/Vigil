@@ -125,11 +125,23 @@ Most OpenTelemetry SDKs/exporters can be pointed at Vigil with environment varia
 ```env
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:8080
 OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
-OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer vigil_...
+OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20vigil_...
 OTEL_SERVICE_NAME=my-app
 ```
 
 The authenticated ingest key selects the Vigil project. OTLP resource field `service.name` becomes the Vigil `source`; OTLP logs become `kind=log`, spans become `kind=trace`, and metric data points become `kind=metric`. OpenTelemetry resource, scope, and signal attributes are preserved under `attrs.otel`, while signal-level attributes are also promoted into top-level `attrs` for normal Vigil filtering and search.
+
+Python apps can install the optional SDK extra and configure the official OTLP/HTTP exporters:
+
+```sh
+pip install "vigil-observability[otel]"
+```
+
+```python
+from vigil_sdk import configure_vigil_otel
+
+configure_vigil_otel(service_name="my-app")
+```
 
 ## Query APIs
 
