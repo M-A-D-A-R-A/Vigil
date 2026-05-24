@@ -1,0 +1,44 @@
+{
+  "name": "vigil-observability",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for sending logs, traces, and metrics to Vigil.",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepack": "tsc -p tsconfig.json",
+    "test": "tsc -p tsconfig.json && node --test test/*.test.mjs"
+  },
+  "keywords": [
+    "vigil",
+    "observability",
+    "logs",
+    "traces",
+    "metrics"
+  ],
+  "author": "M-A-D-A-R-A <andoriyanishant@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/M-A-D-A-R-A/Vigil.git",
+    "directory": "sdk/typescript"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3"
+  }
+}

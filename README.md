@@ -128,6 +128,34 @@ from vigil_sdk import configure_vigil_otel
 configure_vigil_otel(service_name="my-app")
 ```
 
+## TypeScript SDK
+
+The TypeScript SDK lives in `sdk/typescript` and is intended for server-side JavaScript/TypeScript runtimes such as Node, Bun, workers, framework server routes, and backend jobs:
+
+```ts
+import { VigilClient } from "vigil-observability";
+
+const vigil = VigilClient.fromEnv();
+
+await vigil.log("request.completed", {
+  message: "request completed",
+  attrs: { route: "/health" },
+});
+
+await vigil.trace("llm.completed", {
+  traceId: "trace-123",
+  attrs: { total_tokens: 42 },
+});
+
+await vigil.metric("queue.depth", {
+  value: 7,
+  unit: "count",
+  attrs: { queue: "jobs" },
+});
+```
+
+Do not bundle `VIGIL_INGEST_KEY` into browser code. Browser-safe ingest keys and frontend capture helpers are separate roadmap work.
+
 ## Data Storage
 
 `vigil init` does not choose where log files live. It configures your app to send data to a running Vigil server. The server owns the on-disk data directory.
@@ -169,6 +197,7 @@ Useful development commands:
 - `make ui-dev` - start the Vite dev server
 - `make test` - run backend tests
 - `make test-python` - run Python SDK tests
+- `make test-typescript` - run TypeScript SDK tests
 - `make smoke` - build the UI and run the browser first-run/explorer smoke test
 - `make bench` - ingest synthetic logs and time log queries
 - `make size-release` - print stripped release binary size plus embedded UI size
@@ -212,6 +241,7 @@ make bench ARGS="-events 5000 -concurrency 16 -query-runs 25"
 - `internal/` - backend application code
 - `ui/` - React + TypeScript + Vite frontend
 - `sdk/python` - Python SDK package
+- `sdk/typescript` - TypeScript SDK package
 - `web/dist` - built frontend assets
 - `docs/` - usage and operations docs
 - `test/` - integration, e2e, and fixtures
