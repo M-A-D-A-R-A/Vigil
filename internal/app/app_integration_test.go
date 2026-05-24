@@ -129,7 +129,7 @@ func TestBrowserSafeIngestKeys(t *testing.T) {
 	cfg := config.Config{
 		Addr:            ":0",
 		DataDir:         t.TempDir(),
-		MaxEventBytes:   1 << 20,
+		MaxEventBytes:   512,
 		SegmentMaxBytes: 10 * 1024 * 1024,
 	}
 
@@ -226,6 +226,20 @@ func TestBrowserSafeIngestKeys(t *testing.T) {
 	}
 	if status := postBrowserIngestStatus(t, server.URL, browserKey, "https://evil.example", payload); status != http.StatusForbidden {
 		t.Fatalf("expected blocked origin 403, got %d", status)
+	}
+	if status := postBrowserIngestStatus(t, server.URL, browserKey, "", payload); status != http.StatusForbidden {
+		t.Fatalf("expected missing origin 403, got %d", status)
+	}
+	oversizedPayload := map[string]any{
+		"schema_version": 1,
+		"kind":           "log",
+		"ts":             time.Now().UTC().Format(time.RFC3339),
+		"source":         "browser",
+		"name":           "frontend.large",
+		"body":           map[string]any{"message": strings.Repeat("x", 700)},
+	}
+	if status := postBrowserIngestStatus(t, server.URL, browserKey, "http://localhost:3000", oversizedPayload); status != http.StatusBadRequest {
+		t.Fatalf("expected oversized browser payload 400, got %d", status)
 	}
 
 	rotated := map[string]any{}

@@ -188,6 +188,8 @@ vigil-data/
 
 The raw NDJSON files are the source of truth. `vigil.db` is the SQLite read model used by the UI and query APIs, and Vigil can rebuild it from the remaining NDJSON data when needed.
 
+Vigil redacts obvious secrets before raw NDJSON append by default. This covers sensitive key names such as `password`, `token`, `authorization`, and `cookie`, plus common secret-looking values such as bearer tokens, JWTs, provider keys, connection strings with credentials, high-entropy strings, and emails. Set `VIGIL_REDACTION_ENABLED=false` only for local debugging where storing raw secrets is acceptable.
+
 Use `VIGIL_DATA_DIR` to put server data somewhere specific:
 
 ```sh

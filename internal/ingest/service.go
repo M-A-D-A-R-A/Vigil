@@ -9,6 +9,7 @@ import (
 	"vigil/internal/event"
 	"vigil/internal/index"
 	"vigil/internal/project"
+	"vigil/internal/redact"
 	"vigil/internal/store/raw"
 	"vigil/internal/store/sqlite"
 	"vigil/internal/tail"
@@ -27,11 +28,12 @@ type BatchResult struct {
 }
 
 type Stats struct {
-	TotalAccepted     uint64  `json:"total_accepted"`
-	RateWindowSeconds int     `json:"rate_window_seconds"`
-	RecentEvents      int     `json:"recent_events"`
-	EventsPerSecond   float64 `json:"events_per_second"`
-	EventsPerMinute   float64 `json:"events_per_minute"`
+	TotalAccepted     uint64       `json:"total_accepted"`
+	RateWindowSeconds int          `json:"rate_window_seconds"`
+	RecentEvents      int          `json:"recent_events"`
+	EventsPerSecond   float64      `json:"events_per_second"`
+	EventsPerMinute   float64      `json:"events_per_minute"`
+	Redaction         redact.Stats `json:"redaction"`
 }
 
 type Service struct {
@@ -46,14 +48,19 @@ type Service struct {
 	totalAccepted  uint64
 	recentIngests  []time.Time
 	rateWindowSize time.Duration
+	redactor       *redact.Redactor
 }
 
-func NewService(projects *project.Service, rawStore *raw.Store, db *sqlite.Store, worker *index.Worker, tailHub *tail.Hub, maxBytes int, gate *sync.RWMutex) *Service {
+func NewService(projects *project.Service, rawStore *raw.Store, db *sqlite.Store, worker *index.Worker, tailHub *tail.Hub, maxBytes int, gate *sync.RWMutex, redactors ...*redact.Redactor) *Service {
 	if maxBytes <= 0 {
 		maxBytes = event.DefaultMaxPayload
 	}
 	if gate == nil {
 		gate = &sync.RWMutex{}
+	}
+	redactor := redact.New(redact.DefaultPolicy())
+	if len(redactors) > 0 && redactors[0] != nil {
+		redactor = redactors[0]
 	}
 	return &Service{
 		projects:       projects,
@@ -64,6 +71,7 @@ func NewService(projects *project.Service, rawStore *raw.Store, db *sqlite.Store
 		maxBytes:       maxBytes,
 		gate:           gate,
 		rateWindowSize: time.Minute,
+		redactor:       redactor,
 	}
 }
 
@@ -142,6 +150,7 @@ func (s *Service) IngestEnvelopes(authorization string, envelopes []event.Envelo
 	}
 	latestReceivedAt := ""
 	for _, ev := range events {
+		s.redactor.ApplyEvent(ev)
 		if _, err := s.raw.Append(ev); err != nil {
 			return nil, err
 		}
@@ -192,6 +201,7 @@ func (s *Service) Stats() Stats {
 		RecentEvents:      recent,
 		EventsPerSecond:   eventsPerSecond,
 		EventsPerMinute:   eventsPerSecond * 60,
+		Redaction:         s.redactor.Stats(),
 	}
 }
 
@@ -205,6 +215,7 @@ func (s *Service) recordAccepted(now time.Time) {
 }
 
 func (s *Service) acceptEvent(ev *event.StoredEvent) (*Result, error) {
+	s.redactor.ApplyEvent(ev)
 	if _, err := s.raw.Append(ev); err != nil {
 		return nil, err
 	}

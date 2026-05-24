@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"vigil/internal/event"
+	"vigil/internal/redact"
 )
 
 type Config struct {
@@ -15,6 +16,7 @@ type Config struct {
 	MaxEventBytes   int
 	SegmentMaxBytes int64
 	Retention       RetentionConfig
+	Redaction       redact.Policy
 }
 
 type RetentionConfig struct {
@@ -43,6 +45,11 @@ func Load() Config {
 		SweepInterval: envDuration("VIGIL_RETENTION_SWEEP_INTERVAL", time.Hour),
 		DryRun:        envBool("VIGIL_RETENTION_DRY_RUN", false),
 	}
+	redaction := redact.DefaultPolicy()
+	redaction.Enabled = envBool("VIGIL_REDACTION_ENABLED", redaction.Enabled)
+	redaction.RedactEmails = envBool("VIGIL_REDACTION_EMAILS", redaction.RedactEmails)
+	redaction.MaxDepth = envInt("VIGIL_REDACTION_MAX_DEPTH", redaction.MaxDepth)
+	redaction.MaxStringLen = envInt("VIGIL_REDACTION_MAX_STRING_LENGTH", redaction.MaxStringLen)
 	if retention.Days < 1 {
 		retention.Days = 30
 	}
@@ -56,6 +63,7 @@ func Load() Config {
 		MaxEventBytes:   maxEventBytes,
 		SegmentMaxBytes: segmentMaxBytes,
 		Retention:       retention,
+		Redaction:       redaction,
 	}
 }
 

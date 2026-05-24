@@ -38,7 +38,14 @@ Example health shape:
     "rate_window_seconds": 60,
     "recent_events": 12,
     "events_per_second": 0.2,
-    "events_per_minute": 12
+    "events_per_minute": 12,
+    "redaction": {
+      "enabled": true,
+      "redact_emails": true,
+      "fields_redacted": 4,
+      "values_redacted": 1,
+      "emails_redacted": 2
+    }
   },
   "index": {
     "queue_depth": 2,
@@ -166,6 +173,12 @@ Body:
 ```
 
 The browser key selects the project, so `project_id` may be omitted. If `project_id` is present, it must match the key's project. The endpoint rejects private server ingest keys, disallowed origins, missing origins, oversized payloads, and bursts above the local in-memory rate limit.
+
+### Ingest Redaction
+
+Vigil redacts obvious secrets before raw NDJSON append. Redaction applies to native JSON ingest, browser JSON ingest, and OTLP-derived events. The first pass redacts sensitive key names, bearer tokens, JWTs, provider-style API keys, connection strings with credentials, high-entropy secret-looking strings, and emails when email redaction is enabled.
+
+Use `VIGIL_REDACTION_ENABLED=false` to disable redaction for local-only debugging, or `VIGIL_REDACTION_EMAILS=false` to preserve email addresses while still redacting tokens and credentials.
 
 ### OpenTelemetry OTLP/HTTP
 
