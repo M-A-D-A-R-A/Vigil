@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"mime"
 	"net/http"
 	"net/http/httptest"
@@ -121,6 +122,132 @@ func TestProjectIngestAndQueries(t *testing.T) {
 	respOld.Body.Close()
 	if respOld.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expected 401 for old key, got %d", respOld.StatusCode)
+	}
+}
+
+func TestBrowserSafeIngestKeys(t *testing.T) {
+	cfg := config.Config{
+		Addr:            ":0",
+		DataDir:         t.TempDir(),
+		MaxEventBytes:   1 << 20,
+		SegmentMaxBytes: 10 * 1024 * 1024,
+	}
+
+	app, err := New(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+	defer app.Close()
+
+	server := httptest.NewServer(app.Handler)
+	defer server.Close()
+
+	projectID, privateKey := createProjectForTest(t, server.URL, "browser-app")
+	createBrowser := map[string]any{}
+	postJSON(t, server.URL+"/api/projects/"+projectID+"/browser-keys", map[string]any{
+		"name":            "web",
+		"allowed_origins": []string{"http://localhost:3000", "https://app.example.test/"},
+	}, &createBrowser)
+
+	browserKey := createBrowser["browser_ingest_key"].(string)
+	if !strings.HasPrefix(browserKey, "vigil_browser_") {
+		t.Fatalf("expected browser key prefix, got %q", browserKey)
+	}
+	keyRecord := createBrowser["key"].(map[string]any)
+	keyID := keyRecord["id"].(string)
+	if _, ok := keyRecord["key_hash"]; ok {
+		t.Fatal("browser key response must not expose key hash")
+	}
+
+	listed := map[string]any{}
+	getJSON(t, server.URL+"/api/projects/"+projectID+"/browser-keys", &listed)
+	keys := listed["browser_keys"].([]any)
+	if len(keys) != 1 {
+		t.Fatalf("expected one listed browser key, got %v", keys)
+	}
+	if _, ok := keys[0].(map[string]any)["browser_ingest_key"]; ok {
+		t.Fatal("listed browser keys must not expose plaintext key")
+	}
+
+	preflight := newRequest(t, http.MethodOptions, server.URL+"/api/browser/ingest", nil)
+	preflight.Header.Set("Origin", "http://localhost:3000")
+	preflight.Header.Set("Access-Control-Request-Method", "POST")
+	preflight.Header.Set("Access-Control-Request-Headers", "Authorization, Content-Type")
+	preflightResp := doRequest(t, preflight)
+	preflightResp.Body.Close()
+	if preflightResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected allowed preflight 204, got %d", preflightResp.StatusCode)
+	}
+	if got := preflightResp.Header.Get("Access-Control-Allow-Origin"); got != "http://localhost:3000" {
+		t.Fatalf("expected CORS allow origin, got %q", got)
+	}
+
+	blockedPreflight := newRequest(t, http.MethodOptions, server.URL+"/api/browser/ingest", nil)
+	blockedPreflight.Header.Set("Origin", "https://evil.example")
+	blockedResp := doRequest(t, blockedPreflight)
+	blockedResp.Body.Close()
+	if blockedResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected blocked preflight 403, got %d", blockedResp.StatusCode)
+	}
+
+	payload := map[string]any{
+		"schema_version": 1,
+		"kind":           "log",
+		"ts":             time.Now().UTC().Format(time.RFC3339),
+		"source":         "browser",
+		"level":          "error",
+		"name":           "frontend.error",
+		"attrs":          map[string]any{"path": "/checkout"},
+		"body":           map[string]any{"message": "client exploded"},
+	}
+	if status := postBrowserIngestStatus(t, server.URL, browserKey, "http://localhost:3000", payload); status != http.StatusAccepted {
+		t.Fatalf("expected browser ingest 202, got %d", status)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		result := map[string]any{}
+		getJSON(t, server.URL+"/api/logs?project_id="+projectID+"&source=browser", &result)
+		return int(result["total"].(float64)) == 1
+	})
+
+	if status := postBrowserIngestStatus(t, server.URL, privateKey, "http://localhost:3000", payload); status != http.StatusUnauthorized {
+		t.Fatalf("expected private key rejected by browser endpoint with 401, got %d", status)
+	}
+	serverPayload := map[string]any{
+		"schema_version": 1,
+		"project_id":     projectID,
+		"kind":           "log",
+		"ts":             time.Now().UTC().Format(time.RFC3339),
+		"source":         "browser",
+		"name":           "native.rejected",
+	}
+	if status := postNativeIngestStatus(t, server.URL, browserKey, serverPayload); status != http.StatusUnauthorized {
+		t.Fatalf("expected browser key rejected by native ingest with 401, got %d", status)
+	}
+	if status := postBrowserIngestStatus(t, server.URL, browserKey, "https://evil.example", payload); status != http.StatusForbidden {
+		t.Fatalf("expected blocked origin 403, got %d", status)
+	}
+
+	rotated := map[string]any{}
+	postJSON(t, server.URL+"/api/projects/"+projectID+"/browser-keys/"+keyID+"/rotate", nil, &rotated)
+	rotatedKey := rotated["browser_ingest_key"].(string)
+	if rotatedKey == browserKey {
+		t.Fatal("expected rotated browser key to change")
+	}
+	if status := postBrowserIngestStatus(t, server.URL, browserKey, "http://localhost:3000", payload); status != http.StatusUnauthorized {
+		t.Fatalf("expected old browser key rejected after rotate with 401, got %d", status)
+	}
+	if status := postBrowserIngestStatus(t, server.URL, rotatedKey, "http://localhost:3000", payload); status != http.StatusAccepted {
+		t.Fatalf("expected rotated browser key accepted, got %d", status)
+	}
+
+	revoked := map[string]any{}
+	postJSON(t, server.URL+"/api/projects/"+projectID+"/browser-keys/"+keyID+"/revoke", nil, &revoked)
+	if revoked["key"].(map[string]any)["status"] != "revoked" {
+		t.Fatalf("expected revoked status, got %v", revoked)
+	}
+	if status := postBrowserIngestStatus(t, server.URL, rotatedKey, "http://localhost:3000", payload); status != http.StatusUnauthorized {
+		t.Fatalf("expected revoked browser key rejected with 401, got %d", status)
 	}
 }
 
@@ -714,6 +841,29 @@ func postIngestResult(t *testing.T, baseURL, key string, payload map[string]any)
 	return result
 }
 
+func postNativeIngestStatus(t *testing.T, baseURL, key string, payload map[string]any) int {
+	t.Helper()
+	body, _ := json.Marshal(payload)
+	req := newRequest(t, http.MethodPost, baseURL+"/api/ingest", body)
+	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Content-Type", "application/json")
+	resp := doRequest(t, req)
+	defer resp.Body.Close()
+	return resp.StatusCode
+}
+
+func postBrowserIngestStatus(t *testing.T, baseURL, key, origin string, payload map[string]any) int {
+	t.Helper()
+	body, _ := json.Marshal(payload)
+	req := newRequest(t, http.MethodPost, baseURL+"/api/browser/ingest", body)
+	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", origin)
+	resp := doRequest(t, req)
+	defer resp.Body.Close()
+	return resp.StatusCode
+}
+
 func postOTLPProto(t *testing.T, requestURL, key string, payload proto.Message) {
 	t.Helper()
 	body, err := proto.Marshal(payload)
@@ -742,6 +892,28 @@ func postOTLPProto(t *testing.T, requestURL, key string, payload proto.Message) 
 	if mediaType != "application/x-protobuf" {
 		t.Fatalf("expected protobuf response, got %q", resp.Header.Get("Content-Type"))
 	}
+}
+
+func newRequest(t *testing.T, method, requestURL string, body []byte) *http.Request {
+	t.Helper()
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequest(method, requestURL, reader)
+	if err != nil {
+		t.Fatalf("new %s request %s: %v", method, requestURL, err)
+	}
+	return req
+}
+
+func doRequest(t *testing.T, req *http.Request) *http.Response {
+	t.Helper()
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", req.Method, req.URL, err)
+	}
+	return resp
 }
 
 func otelResource(serviceName string) *resourcev1.Resource {

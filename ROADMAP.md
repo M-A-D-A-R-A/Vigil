@@ -10,6 +10,7 @@ Vigil already has:
 
 - single-binary Go server with embedded UI
 - project creation and project-scoped ingest keys
+- browser-safe ingest keys with origin allowlists and browser-only ingest
 - raw append-only NDJSON storage as the source of truth
 - SQLite read models for logs, traces, stats, and simple URL-filtered search
 - async indexing with rebuild from raw storage
@@ -66,7 +67,7 @@ vigil logs --json
 
 ### SDKs And Ingestion
 
-- Add a TypeScript SDK for Node and browser-adjacent apps.
+- Add browser capture helpers on top of browser-safe ingest keys.
 - Add file, stdin, JSON-log, and logfmt ingestion paths.
 - Add schema presets for app logs, HTTP access logs, worker jobs, LLM / agent traces, and metric events.
 
