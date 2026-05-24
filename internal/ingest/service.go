@@ -90,23 +90,25 @@ func (s *Service) Ingest(authorization string, payload []byte) (*Result, error) 
 		return nil, err
 	}
 
-	return s.acceptEvent(ev)
-}
-
-func (s *Service) IngestForProject(projectID string, payload []byte) (*Result, error) {
-	s.gate.RLock()
-	defer s.gate.RUnlock()
-
-	if len(payload) > s.maxBytes {
-		return nil, fmt.Errorf("payload too large")
+	if _, err := s.raw.Append(ev); err != nil {
+		return nil, err
+	}
+	if s.tail != nil {
+		s.tail.Publish(ev)
 	}
 
-	ev, err := event.ParseAndNormalizeForProject(payload, projectID, time.Now().UTC())
-	if err != nil {
+	if err := s.db.MarkLatestIngested(ev.ReceivedAt); err != nil {
 		return nil, err
 	}
 
-	return s.acceptEvent(ev)
+	s.recordAccepted(time.Now().UTC())
+	indexedAsync := s.worker.Enqueue(ev)
+
+	return &Result{
+		EventID:      ev.EventID,
+		ReceivedAt:   ev.ReceivedAt,
+		IndexedAsync: indexedAsync,
+	}, nil
 }
 
 func (s *Service) IngestEnvelopes(authorization string, envelopes []event.Envelope) (*BatchResult, error) {
@@ -202,28 +204,6 @@ func (s *Service) recordAccepted(now time.Time) {
 	s.totalAccepted++
 	s.recentIngests = append(s.recentIngests, now.UTC())
 	s.pruneRecentLocked(now.UTC())
-}
-
-func (s *Service) acceptEvent(ev *event.StoredEvent) (*Result, error) {
-	if _, err := s.raw.Append(ev); err != nil {
-		return nil, err
-	}
-	if s.tail != nil {
-		s.tail.Publish(ev)
-	}
-
-	if err := s.db.MarkLatestIngested(ev.ReceivedAt); err != nil {
-		return nil, err
-	}
-
-	s.recordAccepted(time.Now().UTC())
-	indexedAsync := s.worker.Enqueue(ev)
-
-	return &Result{
-		EventID:      ev.EventID,
-		ReceivedAt:   ev.ReceivedAt,
-		IndexedAsync: indexedAsync,
-	}, nil
 }
 
 func (s *Service) pruneRecentLocked(now time.Time) {

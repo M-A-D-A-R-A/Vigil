@@ -2,15 +2,12 @@ package sqlite
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -20,9 +17,7 @@ import (
 )
 
 type Store struct {
-	db          *sql.DB
-	settingsMu  sync.Mutex
-	keyHashSeed string
+	db *sql.DB
 }
 
 type ProjectRecord struct {
@@ -31,17 +26,6 @@ type ProjectRecord struct {
 	Status    string
 	CreatedAt string
 	UpdatedAt string
-}
-
-type BrowserKeyRecord struct {
-	ID             string
-	ProjectID      string
-	Name           string
-	Status         string
-	KeyHash        string
-	AllowedOrigins []string
-	CreatedAt      string
-	UpdatedAt      string
 }
 
 type SyncStatus struct {
@@ -155,24 +139,6 @@ func (s *Store) init(ctx context.Context) error {
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		);`,
-		`CREATE TABLE IF NOT EXISTS settings (
-			key TEXT PRIMARY KEY,
-			value TEXT NOT NULL,
-			updated_at TEXT NOT NULL
-		);`,
-		`CREATE TABLE IF NOT EXISTS browser_ingest_keys (
-			id TEXT PRIMARY KEY,
-			project_id TEXT NOT NULL,
-			name TEXT NOT NULL,
-			status TEXT NOT NULL,
-			key_hash TEXT NOT NULL UNIQUE,
-			allowed_origins_json TEXT NOT NULL,
-			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL,
-			FOREIGN KEY(project_id) REFERENCES projects(id)
-		);`,
-		`CREATE INDEX IF NOT EXISTS idx_browser_ingest_keys_project ON browser_ingest_keys(project_id, created_at ASC);`,
-		`CREATE INDEX IF NOT EXISTS idx_browser_ingest_keys_hash ON browser_ingest_keys(key_hash);`,
 		`CREATE TABLE IF NOT EXISTS events (
 			event_id TEXT PRIMARY KEY,
 			schema_version INTEGER NOT NULL,
@@ -234,10 +200,6 @@ func (s *Store) init(ctx context.Context) error {
 		}
 	}
 
-	if _, err := s.KeyHashSeed(); err != nil {
-		return fmt.Errorf("init key hash seed: %w", err)
-	}
-
 	return nil
 }
 
@@ -283,18 +245,6 @@ func (s *Store) ListProjects() ([]ProjectRecord, error) {
 	return records, rows.Err()
 }
 
-func (s *Store) GetProjectByID(projectID string) (*ProjectRecord, error) {
-	row := s.db.QueryRow(`SELECT id, name, status, created_at, updated_at FROM projects WHERE id = ?`, projectID)
-	var record ProjectRecord
-	if err := row.Scan(&record.ID, &record.Name, &record.Status, &record.CreatedAt, &record.UpdatedAt); err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("project not found")
-		}
-		return nil, fmt.Errorf("load project: %w", err)
-	}
-	return &record, nil
-}
-
 func (s *Store) UpdateProjectKey(projectID, keyHash string, now time.Time) (ProjectRecord, error) {
 	updatedAt := now.UTC().Format(time.RFC3339Nano)
 	if _, err := s.db.Exec(
@@ -328,244 +278,6 @@ func (s *Store) GetProjectByKeyHash(keyHash string) (*ProjectRecord, error) {
 		return nil, fmt.Errorf("lookup project by key: %w", err)
 	}
 	return &record, nil
-}
-
-func (s *Store) KeyHashSeed() (string, error) {
-	s.settingsMu.Lock()
-	defer s.settingsMu.Unlock()
-
-	if s.keyHashSeed != "" {
-		return s.keyHashSeed, nil
-	}
-
-	const settingKey = "key_hash_seed"
-	row := s.db.QueryRow(`SELECT value FROM settings WHERE key = ?`, settingKey)
-	var value string
-	if err := row.Scan(&value); err != nil {
-		if err != sql.ErrNoRows {
-			return "", fmt.Errorf("load key hash seed: %w", err)
-		}
-
-		generated, err := randomHex(32)
-		if err != nil {
-			return "", fmt.Errorf("generate key hash seed: %w", err)
-		}
-		now := time.Now().UTC().Format(time.RFC3339Nano)
-		if _, err := s.db.Exec(
-			`INSERT INTO settings(key, value, updated_at) VALUES(?, ?, ?)`,
-			settingKey,
-			generated,
-			now,
-		); err != nil {
-			return "", fmt.Errorf("save key hash seed: %w", err)
-		}
-		value = generated
-	}
-
-	s.keyHashSeed = value
-	return value, nil
-}
-
-func (s *Store) CreateBrowserKey(id, projectID, name, keyHash string, allowedOrigins []string, now time.Time) (BrowserKeyRecord, error) {
-	originsJSON, err := json.Marshal(allowedOrigins)
-	if err != nil {
-		return BrowserKeyRecord{}, fmt.Errorf("encode browser key origins: %w", err)
-	}
-	record := BrowserKeyRecord{
-		ID:             id,
-		ProjectID:      projectID,
-		Name:           name,
-		Status:         "active",
-		KeyHash:        keyHash,
-		AllowedOrigins: append([]string(nil), allowedOrigins...),
-		CreatedAt:      now.UTC().Format(time.RFC3339Nano),
-		UpdatedAt:      now.UTC().Format(time.RFC3339Nano),
-	}
-	_, err = s.db.Exec(
-		`INSERT INTO browser_ingest_keys(id, project_id, name, status, key_hash, allowed_origins_json, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		record.ID,
-		record.ProjectID,
-		record.Name,
-		record.Status,
-		record.KeyHash,
-		string(originsJSON),
-		record.CreatedAt,
-		record.UpdatedAt,
-	)
-	if err != nil {
-		return BrowserKeyRecord{}, fmt.Errorf("create browser key: %w", err)
-	}
-	return record, nil
-}
-
-func (s *Store) ListBrowserKeys(projectID string) ([]BrowserKeyRecord, error) {
-	rows, err := s.db.Query(
-		`SELECT id, project_id, name, status, key_hash, allowed_origins_json, created_at, updated_at
-		 FROM browser_ingest_keys
-		 WHERE project_id = ?
-		 ORDER BY created_at ASC`,
-		projectID,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("list browser keys: %w", err)
-	}
-	defer rows.Close()
-
-	var records []BrowserKeyRecord
-	for rows.Next() {
-		record, err := scanBrowserKey(rows)
-		if err != nil {
-			return nil, err
-		}
-		records = append(records, record)
-	}
-	return records, rows.Err()
-}
-
-func (s *Store) GetBrowserKeyByHash(keyHash string) (*BrowserKeyRecord, error) {
-	row := s.db.QueryRow(
-		`SELECT id, project_id, name, status, key_hash, allowed_origins_json, created_at, updated_at
-		 FROM browser_ingest_keys
-		 WHERE key_hash = ?`,
-		keyHash,
-	)
-	record, err := scanBrowserKey(row)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("invalid browser ingest key")
-		}
-		return nil, err
-	}
-	return &record, nil
-}
-
-func (s *Store) HasActiveBrowserKeyForOrigin(origin string) (bool, error) {
-	rows, err := s.db.Query(
-		`SELECT allowed_origins_json
-		 FROM browser_ingest_keys
-		 WHERE status = 'active'`,
-	)
-	if err != nil {
-		return false, fmt.Errorf("list browser key origins: %w", err)
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var raw string
-		if err := rows.Scan(&raw); err != nil {
-			return false, err
-		}
-		var origins []string
-		if err := json.Unmarshal([]byte(raw), &origins); err != nil {
-			return false, fmt.Errorf("decode browser key origins: %w", err)
-		}
-		for _, allowed := range origins {
-			if allowed == origin {
-				return true, nil
-			}
-		}
-	}
-	return false, rows.Err()
-}
-
-func (s *Store) UpdateBrowserKey(projectID, keyID, keyHash string, allowedOrigins []string, now time.Time) (BrowserKeyRecord, error) {
-	originsJSON, err := json.Marshal(allowedOrigins)
-	if err != nil {
-		return BrowserKeyRecord{}, fmt.Errorf("encode browser key origins: %w", err)
-	}
-	updatedAt := now.UTC().Format(time.RFC3339Nano)
-	result, err := s.db.Exec(
-		`UPDATE browser_ingest_keys
-		 SET key_hash = ?, allowed_origins_json = ?, status = 'active', updated_at = ?
-		 WHERE id = ? AND project_id = ?`,
-		keyHash,
-		string(originsJSON),
-		updatedAt,
-		keyID,
-		projectID,
-	)
-	if err != nil {
-		return BrowserKeyRecord{}, fmt.Errorf("update browser key: %w", err)
-	}
-	if affected, err := result.RowsAffected(); err != nil {
-		return BrowserKeyRecord{}, fmt.Errorf("check browser key update: %w", err)
-	} else if affected == 0 {
-		return BrowserKeyRecord{}, fmt.Errorf("browser key not found")
-	}
-	return s.getBrowserKey(projectID, keyID)
-}
-
-func (s *Store) RevokeBrowserKey(projectID, keyID string, now time.Time) (BrowserKeyRecord, error) {
-	updatedAt := now.UTC().Format(time.RFC3339Nano)
-	result, err := s.db.Exec(
-		`UPDATE browser_ingest_keys
-		 SET status = 'revoked', updated_at = ?
-		 WHERE id = ? AND project_id = ?`,
-		updatedAt,
-		keyID,
-		projectID,
-	)
-	if err != nil {
-		return BrowserKeyRecord{}, fmt.Errorf("revoke browser key: %w", err)
-	}
-	if affected, err := result.RowsAffected(); err != nil {
-		return BrowserKeyRecord{}, fmt.Errorf("check browser key revoke: %w", err)
-	} else if affected == 0 {
-		return BrowserKeyRecord{}, fmt.Errorf("browser key not found")
-	}
-	return s.getBrowserKey(projectID, keyID)
-}
-
-func (s *Store) getBrowserKey(projectID, keyID string) (BrowserKeyRecord, error) {
-	row := s.db.QueryRow(
-		`SELECT id, project_id, name, status, key_hash, allowed_origins_json, created_at, updated_at
-		 FROM browser_ingest_keys
-		 WHERE id = ? AND project_id = ?`,
-		keyID,
-		projectID,
-	)
-	record, err := scanBrowserKey(row)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return BrowserKeyRecord{}, fmt.Errorf("browser key not found")
-		}
-		return BrowserKeyRecord{}, err
-	}
-	return record, nil
-}
-
-type scanner interface {
-	Scan(dest ...any) error
-}
-
-func scanBrowserKey(row scanner) (BrowserKeyRecord, error) {
-	var record BrowserKeyRecord
-	var originsJSON string
-	if err := row.Scan(
-		&record.ID,
-		&record.ProjectID,
-		&record.Name,
-		&record.Status,
-		&record.KeyHash,
-		&originsJSON,
-		&record.CreatedAt,
-		&record.UpdatedAt,
-	); err != nil {
-		return BrowserKeyRecord{}, err
-	}
-	if err := json.Unmarshal([]byte(originsJSON), &record.AllowedOrigins); err != nil {
-		return BrowserKeyRecord{}, fmt.Errorf("decode browser key origins: %w", err)
-	}
-	return record, nil
-}
-
-func randomHex(n int) (string, error) {
-	buf := make([]byte, n)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(buf), nil
 }
 
 func (s *Store) MarkLatestIngested(receivedAt string) error {

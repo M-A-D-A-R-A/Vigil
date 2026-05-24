@@ -45,14 +45,6 @@ type StoredEvent struct {
 }
 
 func ParseAndNormalize(payload []byte, projectID string, now time.Time) (*StoredEvent, error) {
-	return parseAndNormalize(payload, projectID, now, true)
-}
-
-func ParseAndNormalizeForProject(payload []byte, projectID string, now time.Time) (*StoredEvent, error) {
-	return parseAndNormalize(payload, projectID, now, false)
-}
-
-func parseAndNormalize(payload []byte, projectID string, now time.Time, requireProjectID bool) (*StoredEvent, error) {
 	if len(payload) == 0 {
 		return nil, errors.New("payload is required")
 	}
@@ -63,9 +55,6 @@ func parseAndNormalize(payload []byte, projectID string, now time.Time, requireP
 	var env Envelope
 	if err := decoder.Decode(&env); err != nil {
 		return nil, fmt.Errorf("invalid JSON payload: %w", err)
-	}
-	if !requireProjectID && strings.TrimSpace(env.ProjectID) == "" {
-		env.ProjectID = projectID
 	}
 
 	return NormalizeEnvelope(env, projectID, now)
