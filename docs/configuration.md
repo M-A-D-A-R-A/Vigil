@@ -10,7 +10,17 @@
 - `VIGIL_RETENTION_DAYS` - keep this many UTC day folders when retention is enabled, defaults to `30`
 - `VIGIL_RETENTION_SWEEP_INTERVAL` - how often retention runs, defaults to `1h`
 - `VIGIL_RETENTION_DRY_RUN` - report what would be deleted without removing data, defaults to `false`
+- `VIGIL_REDACTION_ENABLED` - redact obvious secrets before raw append, defaults to `true`
+- `VIGIL_REDACTION_EMAILS` - redact email addresses as PII, defaults to `true`
+- `VIGIL_REDACTION_MAX_DEPTH` - max JSON nesting depth to redact, defaults to `8`
+- `VIGIL_REDACTION_MAX_STRING_LENGTH` - max characters inspected per string, defaults to `8192`
 - `VIGIL_CONFIG_PATH` - optional `vigil` CLI config file path override
+
+## Redaction behavior
+
+Redaction runs before Vigil writes raw NDJSON, so obvious secrets do not become part of the source of truth. The first pass redacts sensitive key names such as `password`, `token`, `secret`, `api_key`, `authorization`, `cookie`, `access_token`, and `refresh_token`; it also redacts common secret-looking values such as bearer tokens, JWTs, provider-style API keys, connection strings with credentials, high-entropy strings, and emails when email redaction is enabled.
+
+Normal fields are preserved. Redaction can be disabled for local-only debugging with `VIGIL_REDACTION_ENABLED=false`, and email redaction can be disabled separately with `VIGIL_REDACTION_EMAILS=false`.
 
 ## Retention behavior
 

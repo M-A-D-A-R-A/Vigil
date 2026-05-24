@@ -38,7 +38,14 @@ Example health shape:
     "rate_window_seconds": 60,
     "recent_events": 12,
     "events_per_second": 0.2,
-    "events_per_minute": 12
+    "events_per_minute": 12,
+    "redaction": {
+      "enabled": true,
+      "redact_emails": true,
+      "fields_redacted": 4,
+      "values_redacted": 1,
+      "emails_redacted": 2
+    }
   },
   "index": {
     "queue_depth": 2,
@@ -76,6 +83,37 @@ List projects without exposing stored ingest keys.
 
 Rotate the ingest key for a project and return the new plaintext key once.
 
+### Browser Ingest Keys
+
+Browser ingest keys are public, project-scoped, ingest-only keys for frontend telemetry. They are stored as digests, returned in plaintext only when created or rotated, and must be paired with an allowed browser `Origin`.
+
+They do not make the whole Vigil server browser-safe or internet-safe. Browser keys can only write browser events, but the project, query, and key-management APIs remain local-admin/trusted-network APIs until a later auth/RBAC layer exists.
+
+`POST /api/projects/{id}/browser-keys`
+
+Create a browser key and return the plaintext `browser_ingest_key` once.
+
+Request body:
+
+```json
+{
+  "name": "local web",
+  "allowed_origins": ["http://localhost:3000", "https://app.example.com"]
+}
+```
+
+`GET /api/projects/{id}/browser-keys`
+
+List browser keys without exposing plaintext key material or key hashes.
+
+`POST /api/projects/{id}/browser-keys/{key_id}/rotate`
+
+Rotate one browser key and return the new plaintext `browser_ingest_key` once. The old key stops working immediately.
+
+`POST /api/projects/{id}/browser-keys/{key_id}/revoke`
+
+Revoke one browser key. Revoked keys cannot ingest browser events.
+
 ## Ingest
 
 Vigil's native JSON ingest remains the simplest first-run path.
@@ -106,6 +144,65 @@ Body:
   }
 }
 ```
+
+### Browser JSON Ingest
+
+`POST /api/browser/ingest`
+
+Headers:
+
+- `Authorization: Bearer <browser_ingest_key>`
+- `Content-Type: application/json`
+- `Origin: <allowed_origin>` set by the browser
+
+Body:
+
+```json
+{
+  "schema_version": 1,
+  "kind": "log",
+  "ts": "2026-05-02T12:00:00Z",
+  "source": "browser",
+  "name": "frontend.error",
+  "level": "error",
+  "attrs": {
+    "path": "/checkout"
+  },
+  "body": {
+    "message": "client error"
+  }
+}
+```
+
+The browser key selects the project, so `project_id` may be omitted. If `project_id` is present, it must match the key's project. The endpoint rejects private server ingest keys, disallowed origins, missing origins, oversized payloads, and bursts above the local in-memory rate limit.
+
+Browser example:
+
+```js
+await fetch("http://localhost:8080/api/browser/ingest", {
+  method: "POST",
+  headers: {
+    Authorization: `Bearer ${VIGIL_BROWSER_INGEST_KEY}`,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    schema_version: 1,
+    kind: "log",
+    ts: new Date().toISOString(),
+    source: "browser",
+    level: "error",
+    name: "frontend.error",
+    attrs: { path: location.pathname },
+    body: { message: "client error" },
+  }),
+});
+```
+
+### Ingest Redaction
+
+Vigil redacts obvious secrets before raw NDJSON append. Redaction applies to native JSON ingest, browser JSON ingest, and OTLP-derived events. The first pass redacts sensitive key names, bearer tokens, JWTs, provider-style API keys, connection strings with credentials, high-entropy secret-looking strings, and emails when email redaction is enabled.
+
+Use `VIGIL_REDACTION_ENABLED=false` to disable redaction for local-only debugging, or `VIGIL_REDACTION_EMAILS=false` to preserve email addresses while still redacting tokens and credentials.
 
 ### OpenTelemetry OTLP/HTTP
 

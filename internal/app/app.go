@@ -10,6 +10,7 @@ import (
 	"vigil/internal/index"
 	"vigil/internal/ingest"
 	"vigil/internal/project"
+	"vigil/internal/redact"
 	"vigil/internal/retention"
 	"vigil/internal/store/raw"
 	"vigil/internal/store/sqlite"
@@ -36,7 +37,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	tailHub := tail.NewHub()
 	retentionGate := &sync.RWMutex{}
 	retentionEngine := retention.New(cfg.Retention, rawStore, worker, retentionGate)
-	ingestService := ingest.NewService(projectService, rawStore, db, worker, tailHub, cfg.MaxEventBytes, retentionGate)
+	ingestService := ingest.NewService(projectService, rawStore, db, worker, tailHub, cfg.MaxEventBytes, retentionGate, redact.New(cfg.Redaction))
 	server, err := httpapi.New(cfg, projectService, ingestService, worker, tailHub, db, retentionEngine)
 	if err != nil {
 		db.Close()
