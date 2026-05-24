@@ -56,6 +56,7 @@ await vigil.log("request.completed", {
 await vigil.trace("llm.completed", {
   traceId: "trace-123",
   spanId: "span-1",
+  parentSpanId: "span-root",
   attrs: { total_tokens: 42, cost_usd: 0.0021 },
 });
 
@@ -108,7 +109,46 @@ const capture = startVigilBrowserCapture({
 });
 ```
 
-The capture helper records safe summaries for page views, route changes, `console.error`, uncaught errors, unhandled promise rejections, and failed `fetch` calls. It does not capture cookies, local/session storage, auth headers, request bodies, response bodies, password fields, full DOM, screenshots, or HAR files.
+The capture helper records safe summaries for page views, route changes, `console.error`, uncaught errors, unhandled promise rejections, and `fetch` calls. By default it attaches W3C `traceparent` headers to outgoing `fetch` requests and records request spans with `trace_id`, `span_id`, and `parent_span_id`. It does not capture cookies, local/session storage, auth headers, request bodies, response bodies, password fields, full DOM, screenshots, or HAR files.
+
+Disable fetch span capture or header propagation when needed:
+
+```ts
+startVigilBrowserCapture({
+  baseUrl: "http://localhost:8080",
+  browserIngestKey: import.meta.env.VITE_VIGIL_BROWSER_INGEST_KEY,
+  captureFetchSpans: false,
+  propagateTraceHeaders: false,
+});
+```
+
+## Trace Context
+
+Use the W3C helper functions to continue a browser trace on the server and forward it to downstream services:
+
+```ts
+import { VigilClient, continueTraceContext, parseTraceparent, traceparentHeaders } from "vigil-observability";
+
+const vigil = VigilClient.fromEnv();
+
+export async function POST(request: Request) {
+  const span = continueTraceContext(parseTraceparent(request.headers.get("traceparent")));
+
+  await vigil.log("api.checkout.started", {
+    traceId: span.traceId,
+    spanId: span.spanId,
+    parentSpanId: span.parentSpanId,
+    attrs: { route: "/api/checkout" },
+  });
+
+  await fetch("http://worker.local/jobs", {
+    method: "POST",
+    headers: traceparentHeaders(span),
+  });
+}
+```
+
+Query by `trace_id` in Vigil to see the browser event, API log, downstream worker, and any later DB/ingest events in one flow. Framework-specific fields can stay in `attrs`.
 
 ## Query
 

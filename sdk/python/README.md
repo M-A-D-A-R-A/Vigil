@@ -64,6 +64,7 @@ vigil.trace(
     "llm.completed",
     trace_id="trace-123",
     span_id="span-1",
+    parent_span_id="span-root",
     attrs={"total_tokens": 42, "cost_usd": 0.0021},
 )
 
@@ -71,6 +72,32 @@ vigil.metric("queue.depth", value=7, unit="count", attrs={"queue": "jobs"})
 ```
 
 Use `VigilClient(base_url=..., project_id=..., ingest_key=...)` if you do not want to configure through environment variables.
+
+## Trace Context
+
+Use the W3C helper functions to continue a browser or upstream service trace and forward it downstream:
+
+```python
+from vigil_sdk import VigilClient, continue_trace_context, parse_traceparent, traceparent_headers
+
+vigil = VigilClient.from_env()
+
+def handle_request(headers):
+    span = continue_trace_context(parse_traceparent(headers.get("traceparent")))
+
+    vigil.log(
+        "api.checkout.started",
+        trace_id=span.trace_id,
+        span_id=span.span_id,
+        parent_span_id=span.parent_span_id,
+        attrs={"route": "/api/checkout"},
+    )
+
+    downstream_headers = traceparent_headers(span)
+    return downstream_headers
+```
+
+All events with the same `trace_id` can be queried together in Vigil. Product-specific IDs can stay in `attrs`.
 
 ## OpenTelemetry Helpers
 

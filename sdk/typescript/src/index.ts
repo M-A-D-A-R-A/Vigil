@@ -66,6 +66,7 @@ export interface IngestOptions {
   level?: string | undefined;
   traceId?: string | undefined;
   spanId?: string | undefined;
+  parentSpanId?: string | undefined;
 }
 
 export interface LogOptions {
@@ -75,11 +76,15 @@ export interface LogOptions {
   body?: JsonValue | undefined;
   ts?: Date | string | undefined;
   source?: string | undefined;
+  traceId?: string | undefined;
+  spanId?: string | undefined;
+  parentSpanId?: string | undefined;
 }
 
 export interface TraceOptions {
   traceId: string;
   spanId?: string | undefined;
+  parentSpanId?: string | undefined;
   level?: string | undefined;
   attrs?: JsonObject | undefined;
   body?: JsonValue | undefined;
@@ -122,6 +127,7 @@ export interface BrowserIngestOptions {
   level?: string | undefined;
   traceId?: string | undefined;
   spanId?: string | undefined;
+  parentSpanId?: string | undefined;
 }
 
 export interface BrowserLogOptions {
@@ -131,6 +137,9 @@ export interface BrowserLogOptions {
   body?: JsonValue | undefined;
   ts?: Date | string | undefined;
   source?: string | undefined;
+  traceId?: string | undefined;
+  spanId?: string | undefined;
+  parentSpanId?: string | undefined;
 }
 
 export interface BrowserCaptureOptions extends BrowserVigilClientOptions {
@@ -140,9 +149,18 @@ export interface BrowserCaptureOptions extends BrowserVigilClientOptions {
   captureUnhandledRejections?: boolean | undefined;
   capturePageViews?: boolean | undefined;
   captureRouteChanges?: boolean | undefined;
+  captureFetchSpans?: boolean | undefined;
   captureFetchFailures?: boolean | undefined;
+  propagateTraceHeaders?: boolean | undefined;
   baseAttrs?: JsonObject | undefined;
   window?: BrowserWindowLike | undefined;
+}
+
+export interface TraceContext {
+  traceId: string;
+  spanId: string;
+  parentSpanId?: string | undefined;
+  sampled?: boolean | undefined;
 }
 
 export interface BrowserCaptureHandle {
@@ -203,6 +221,70 @@ export class VigilHTTPError extends VigilError {
     this.statusCode = statusCode;
     this.body = body;
   }
+}
+
+export function createTraceContext(options: { sampled?: boolean | undefined } = {}): TraceContext {
+  return {
+    traceId: randomHex(16),
+    spanId: randomHex(8),
+    sampled: options.sampled ?? true,
+  };
+}
+
+export function childTraceContext(parent: TraceContext | string): TraceContext {
+  const parsed = typeof parent === "string" ? parseTraceparent(parent) : parent;
+  if (!parsed) {
+    return createTraceContext();
+  }
+  return {
+    traceId: parsed.traceId,
+    parentSpanId: parsed.spanId,
+    spanId: randomHex(8),
+    sampled: parsed.sampled ?? true,
+  };
+}
+
+export function continueTraceContext(parent: TraceContext | string | undefined | null): TraceContext {
+  if (!parent) {
+    return createTraceContext();
+  }
+  return childTraceContext(parent);
+}
+
+export function parseTraceparent(header: string | undefined | null): TraceContext | undefined {
+  const value = clean(header).toLowerCase();
+  const match = /^([0-9a-f]{2})-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$/.exec(value);
+  if (!match) {
+    return undefined;
+  }
+  const version = match[1] ?? "";
+  const traceId = match[2] ?? "";
+  const spanId = match[3] ?? "";
+  const flags = match[4] ?? "";
+  if (version === "ff" || !isValidTraceId(traceId) || !isValidSpanId(spanId)) {
+    return undefined;
+  }
+  return {
+    traceId,
+    spanId,
+    sampled: (parseInt(flags, 16) & 1) === 1,
+  };
+}
+
+export function formatTraceparent(context: TraceContext): string {
+  const traceId = clean(context.traceId).toLowerCase();
+  const spanId = clean(context.spanId).toLowerCase();
+  if (!isValidTraceId(traceId)) {
+    throw new VigilConfigError("traceId must be a non-zero 32-character hex string");
+  }
+  if (!isValidSpanId(spanId)) {
+    throw new VigilConfigError("spanId must be a non-zero 16-character hex string");
+  }
+  return `00-${traceId}-${spanId}-${context.sampled === false ? "00" : "01"}`;
+}
+
+export function traceparentHeaders(context: TraceContext): Record<string, string> {
+  return { traceparent: formatTraceparent(context) };
 }
 
 export class VigilClient {
@@ -304,6 +386,7 @@ export class VigilClient {
     setIfPresent(envelope, "level", options.level);
     setIfPresent(envelope, "trace_id", options.traceId);
     setIfPresent(envelope, "span_id", options.spanId);
+    setIfPresent(envelope, "parent_span_id", options.parentSpanId);
 
     const payload = await this.request("POST", "/api/ingest", {
       headers: { Authorization: `Bearer ${this.ingestKey}` },
@@ -324,6 +407,9 @@ export class VigilClient {
       body,
       ts: options.ts,
       source: options.source,
+      traceId: options.traceId,
+      spanId: options.spanId,
+      parentSpanId: options.parentSpanId,
     });
   }
 
@@ -334,6 +420,7 @@ export class VigilClient {
       level: options.level ?? "info",
       traceId: options.traceId,
       spanId: options.spanId,
+      parentSpanId: options.parentSpanId,
       attrs: options.attrs,
       body: options.body,
       ts: options.ts,
@@ -528,6 +615,7 @@ export class BrowserVigilClient {
     setIfPresent(envelope, "level", options.level);
     setIfPresent(envelope, "trace_id", options.traceId);
     setIfPresent(envelope, "span_id", options.spanId);
+    setIfPresent(envelope, "parent_span_id", options.parentSpanId);
 
     const payload = await requestWithTransport(this.transport, {
       baseUrl: this.baseUrl,
@@ -552,6 +640,9 @@ export class BrowserVigilClient {
       body,
       ts: options.ts,
       source: options.source,
+      traceId: options.traceId,
+      spanId: options.spanId,
+      parentSpanId: options.parentSpanId,
     });
   }
 
@@ -585,18 +676,23 @@ export function startVigilBrowserCapture(options: BrowserCaptureOptions = {}): B
   const captureUnhandledRejections = options.captureUnhandledRejections ?? true;
   const capturePageViews = options.capturePageViews ?? true;
   const captureRouteChanges = options.captureRouteChanges ?? true;
+  const captureFetchSpans = options.captureFetchSpans ?? true;
   const captureFetchFailures = options.captureFetchFailures ?? true;
+  const propagateTraceHeaders = options.propagateTraceHeaders ?? true;
   const baseAttrs = options.baseAttrs ?? {};
 
   if (!win) {
     return { client, stop: () => undefined };
   }
 
-  const send = (name: string, attrs: JsonObject = {}, body: JsonValue = null, level = "error"): void => {
+  const send = (name: string, attrs: JsonObject = {}, body: JsonValue = null, level = "error", trace?: TraceContext): void => {
     void client.log(name, {
       level,
       attrs: { ...browserContext(win), ...baseAttrs, ...attrs },
       body,
+      traceId: trace?.traceId,
+      spanId: trace?.spanId,
+      parentSpanId: trace?.parentSpanId,
     }).catch(() => undefined);
   };
 
@@ -644,8 +740,13 @@ export function startVigilBrowserCapture(options: BrowserCaptureOptions = {}): B
     installRouteCapture(win, send, cleanup);
   }
 
-  if (captureFetchFailures && typeof win.fetch === "function") {
-    installFetchCapture(win, send, cleanup);
+  if ((captureFetchSpans || captureFetchFailures || propagateTraceHeaders) && typeof win.fetch === "function") {
+    installFetchCapture(win, send, cleanup, {
+      captureFetchSpans,
+      captureFetchFailures,
+      propagateTraceHeaders,
+      vigilBaseUrl: client.baseUrl,
+    });
   }
 
   return {
@@ -927,8 +1028,14 @@ function installRouteCapture(
 
 function installFetchCapture(
   win: BrowserWindowLike,
-  send: (name: string, attrs?: JsonObject, body?: JsonValue, level?: string) => void,
+  send: (name: string, attrs?: JsonObject, body?: JsonValue, level?: string, trace?: TraceContext) => void,
   cleanup: Array<() => void>,
+  options: {
+    captureFetchSpans: boolean;
+    captureFetchFailures: boolean;
+    propagateTraceHeaders: boolean;
+    vigilBaseUrl: string;
+  },
 ): void {
   if (!win.fetch) {
     return;
@@ -938,29 +1045,137 @@ function installFetchCapture(
     const started = Date.now();
     const method = fetchMethod(input, init);
     const path = fetchPath(input);
+    const url = fetchURL(input);
+    const skip = isVigilIngestURL(url, options.vigilBaseUrl);
+    const trace = !skip && (options.propagateTraceHeaders || options.captureFetchSpans)
+      ? createTraceContext()
+      : undefined;
+    const [nextInput, nextInit] = trace && options.propagateTraceHeaders
+      ? withTraceparent(input, init, trace)
+      : [input, init];
     try {
-      const response = await originalFetch(input, init);
-      if (!response.ok) {
+      const response = await originalFetch(nextInput, nextInit);
+      if (!skip && options.captureFetchSpans) {
+        send("browser.fetch", {
+          method,
+          path,
+          status: response.status,
+          duration_ms: Date.now() - started,
+        }, null, response.ok ? "info" : "error", trace);
+      }
+      if (!skip && options.captureFetchFailures && !response.ok) {
         send("browser.fetch_failed", {
           method,
           path,
           status: response.status,
           duration_ms: Date.now() - started,
-        });
+        }, null, "error", trace);
       }
       return response;
     } catch (error) {
-      send("browser.fetch_error", {
-        method,
-        path,
-        duration_ms: Date.now() - started,
-      }, errorBody(error, "fetch failed"));
+      if (!skip && options.captureFetchFailures) {
+        send("browser.fetch_error", {
+          method,
+          path,
+          duration_ms: Date.now() - started,
+        }, errorBody(error, "fetch failed"), "error", trace);
+      }
+      if (!skip && options.captureFetchSpans) {
+        send("browser.fetch", {
+          method,
+          path,
+          duration_ms: Date.now() - started,
+          error: true,
+        }, null, "error", trace);
+      }
       throw error;
     }
   };
   cleanup.push(() => {
     win.fetch = originalFetch;
   });
+}
+
+function withTraceparent(
+  input: unknown,
+  init: ({ method?: string | undefined; headers?: HeadersInit | undefined } | undefined),
+  trace: TraceContext,
+): [unknown, ({ method?: string | undefined; headers?: HeadersInit | undefined } | undefined)] {
+  const header = formatTraceparent(trace);
+  const nextInit = { ...(init ?? {}) };
+  nextInit.headers = mergeHeader(nextInit.headers ?? requestHeaders(input), "traceparent", header);
+  return [input, nextInit];
+}
+
+function mergeHeader(headers: HeadersInit | undefined, name: string, value: string): HeadersInit {
+  if (typeof Headers !== "undefined") {
+    const next = new Headers(headers);
+    next.set(name, value);
+    return next;
+  }
+  if (Array.isArray(headers)) {
+    const filtered = headers.filter(([key]) => key.toLowerCase() !== name.toLowerCase());
+    return [...filtered, [name, value]];
+  }
+  return { ...(headers ?? {}), [name]: value };
+}
+
+function requestHeaders(input: unknown): HeadersInit | undefined {
+  if (typeof Request !== "undefined" && input instanceof Request) {
+    return input.headers;
+  }
+  return undefined;
+}
+
+function fetchURL(input: unknown): string {
+  if (typeof input === "string") {
+    return input;
+  }
+  if (input instanceof URL) {
+    return input.toString();
+  }
+  if (typeof Request !== "undefined" && input instanceof Request) {
+    return input.url;
+  }
+  return "";
+}
+
+function isVigilIngestURL(rawURL: string, baseUrl: string): boolean {
+  if (!rawURL) {
+    return false;
+  }
+  try {
+    const base = new URL(baseUrl);
+    const target = new URL(rawURL, currentWindow()?.location?.origin ?? base.origin);
+    return target.origin === base.origin
+      && (target.pathname === "/api/ingest" || target.pathname === "/api/browser/ingest");
+  } catch {
+    return false;
+  }
+}
+
+function randomHex(bytes: number): string {
+  const values = new Uint8Array(bytes);
+  const cryptoLike = globalThis.crypto;
+  if (cryptoLike?.getRandomValues) {
+    cryptoLike.getRandomValues(values);
+  } else {
+    for (let i = 0; i < values.length; i += 1) {
+      values[i] = Math.floor(Math.random() * 256);
+    }
+  }
+  if (values.every((value) => value === 0)) {
+    values[values.length - 1] = 1;
+  }
+  return [...values].map((value) => value.toString(16).padStart(2, "0")).join("");
+}
+
+function isValidTraceId(value: string): boolean {
+  return /^[0-9a-f]{32}$/.test(value) && !/^0+$/.test(value);
+}
+
+function isValidSpanId(value: string): boolean {
+  return /^[0-9a-f]{16}$/.test(value) && !/^0+$/.test(value);
 }
 
 function fetchMethod(input: unknown, init?: { method?: string | undefined }): string {
