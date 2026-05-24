@@ -130,7 +130,7 @@ configure_vigil_otel(service_name="my-app")
 
 ## TypeScript SDK
 
-The TypeScript SDK lives in `sdk/typescript` and is intended for server-side JavaScript/TypeScript runtimes such as Node, Bun, workers, framework server routes, and backend jobs:
+The TypeScript SDK lives in `sdk/typescript`. Server-side JavaScript/TypeScript runtimes use the private-key `VigilClient`:
 
 ```ts
 import { VigilClient } from "vigil-observability";
@@ -154,7 +154,18 @@ await vigil.metric("queue.depth", {
 });
 ```
 
-Do not bundle `VIGIL_INGEST_KEY` into browser code. For direct frontend telemetry, create a browser-safe ingest key with allowed origins and send events to `/api/browser/ingest`; browser capture helpers are separate roadmap work.
+Do not bundle `VIGIL_INGEST_KEY` into browser code. Browser apps should use a browser-safe ingest key with `BrowserVigilClient` or `startVigilBrowserCapture`:
+
+```ts
+import { startVigilBrowserCapture } from "vigil-observability";
+
+startVigilBrowserCapture({
+  baseUrl: "http://localhost:8080",
+  browserIngestKey: import.meta.env.VITE_VIGIL_BROWSER_INGEST_KEY,
+});
+```
+
+The capture helper records safe summaries for page views, route changes, `console.error`, uncaught errors, unhandled promise rejections, and failed `fetch` calls. It does not capture cookies, local/session storage, auth headers, request bodies, response bodies, password fields, full DOM, screenshots, or HAR files.
 
 ## Browser Ingest Keys
 
