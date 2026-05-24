@@ -28,5 +28,7 @@ Include:
 
 - Vigil is designed first for local and trusted-network use.
 - Do not expose an early alpha Vigil server directly to the public internet.
-- Ingest keys should be treated like secrets.
-- Logs can contain sensitive values. Redaction is on the roadmap, but users should avoid sending secrets to Vigil today.
+- Private server ingest keys should be treated like secrets.
+- Browser ingest keys are public, project-scoped, ingest-only keys. They restrict browser writes by key and origin, but they do not add auth/RBAC to the rest of the Vigil server.
+- Project, query, and key-management APIs are local-admin/trusted-network APIs until a later auth/RBAC layer exists.
+- Redaction runs before raw append by default, but users should still avoid intentionally sending secrets to Vigil.

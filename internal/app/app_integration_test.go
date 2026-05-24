@@ -143,6 +143,20 @@ func TestBrowserSafeIngestKeys(t *testing.T) {
 	defer server.Close()
 
 	projectID, privateKey := createProjectForTest(t, server.URL, "browser-app")
+	otherProjectID, _ := createProjectForTest(t, server.URL, "other-browser-app")
+	if status := postJSONStatus(t, server.URL+"/api/projects/"+projectID+"/browser-keys", map[string]any{
+		"name":            "bad path",
+		"allowed_origins": []string{"http://localhost:3000/app"},
+	}); status != http.StatusBadRequest {
+		t.Fatalf("expected origin with path rejected with 400, got %d", status)
+	}
+	if status := postJSONStatus(t, server.URL+"/api/projects/"+projectID+"/browser-keys", map[string]any{
+		"name":            "bad query",
+		"allowed_origins": []string{"http://localhost:3000?debug=true"},
+	}); status != http.StatusBadRequest {
+		t.Fatalf("expected origin with query rejected with 400, got %d", status)
+	}
+
 	createBrowser := map[string]any{}
 	postJSON(t, server.URL+"/api/projects/"+projectID+"/browser-keys", map[string]any{
 		"name":            "web",
@@ -203,6 +217,17 @@ func TestBrowserSafeIngestKeys(t *testing.T) {
 	if status := postBrowserIngestStatus(t, server.URL, browserKey, "http://localhost:3000", payload); status != http.StatusAccepted {
 		t.Fatalf("expected browser ingest 202, got %d", status)
 	}
+	wrongProjectPayload := map[string]any{
+		"schema_version": 1,
+		"project_id":     otherProjectID,
+		"kind":           "log",
+		"ts":             time.Now().UTC().Format(time.RFC3339),
+		"source":         "browser",
+		"name":           "frontend.wrong_project",
+	}
+	if status := postBrowserIngestStatus(t, server.URL, browserKey, "http://localhost:3000", wrongProjectPayload); status != http.StatusBadRequest {
+		t.Fatalf("expected mismatched browser project_id 400, got %d", status)
+	}
 
 	waitFor(t, 2*time.Second, func() bool {
 		result := map[string]any{}
@@ -262,6 +287,14 @@ func TestBrowserSafeIngestKeys(t *testing.T) {
 	}
 	if status := postBrowserIngestStatus(t, server.URL, rotatedKey, "http://localhost:3000", payload); status != http.StatusUnauthorized {
 		t.Fatalf("expected revoked browser key rejected with 401, got %d", status)
+	}
+	revokedPreflight := newRequest(t, http.MethodOptions, server.URL+"/api/browser/ingest", nil)
+	revokedPreflight.Header.Set("Origin", "http://localhost:3000")
+	revokedPreflight.Header.Set("Access-Control-Request-Method", "POST")
+	revokedPreflightResp := doRequest(t, revokedPreflight)
+	revokedPreflightResp.Body.Close()
+	if revokedPreflightResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected revoked key origin preflight 403, got %d", revokedPreflightResp.StatusCode)
 	}
 }
 
@@ -996,6 +1029,27 @@ func readSSEPayload(t *testing.T, reader *bufio.Reader, wantEvent string) map[st
 
 func postJSON(t *testing.T, url string, payload any, target any) {
 	t.Helper()
+	resp := postJSONResponse(t, url, payload)
+	defer resp.Body.Close()
+	if resp.StatusCode >= http.StatusBadRequest {
+		t.Fatalf("POST %s returned status %d", url, resp.StatusCode)
+	}
+	if target != nil {
+		if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
+			t.Fatalf("decode response from %s: %v", url, err)
+		}
+	}
+}
+
+func postJSONStatus(t *testing.T, url string, payload any) int {
+	t.Helper()
+	resp := postJSONResponse(t, url, payload)
+	defer resp.Body.Close()
+	return resp.StatusCode
+}
+
+func postJSONResponse(t *testing.T, url string, payload any) *http.Response {
+	t.Helper()
 	var body []byte
 	if payload != nil {
 		body, _ = json.Marshal(payload)
@@ -1006,15 +1060,7 @@ func postJSON(t *testing.T, url string, payload any, target any) {
 	if err != nil {
 		t.Fatalf("POST %s: %v", url, err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= http.StatusBadRequest {
-		t.Fatalf("POST %s returned status %d", url, resp.StatusCode)
-	}
-	if target != nil {
-		if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
-			t.Fatalf("decode response from %s: %v", url, err)
-		}
-	}
+	return resp
 }
 
 func getJSON(t *testing.T, url string, target any) {

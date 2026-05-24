@@ -160,6 +160,8 @@ Do not bundle `VIGIL_INGEST_KEY` into browser code. For direct frontend telemetr
 
 Browser ingest keys are public, project-scoped, ingest-only keys for frontend telemetry. They are separate from private server ingest keys, require exact origin allowlists, and can only write to `POST /api/browser/ingest`.
 
+Browser keys do not secure the whole Vigil server. The current project, query, and key-management APIs are still intended for local-admin/trusted-network use until Vigil grows auth and RBAC.
+
 Create one for a project:
 
 ```sh
@@ -169,6 +171,28 @@ curl -X POST http://localhost:8080/api/projects/proj_.../browser-keys \
 ```
 
 The response returns `browser_ingest_key` once. Use it from browser code with an allowed `Origin`; the browser endpoint infers the project from the key, so `project_id` may be omitted from the event body.
+
+Send a browser event:
+
+```js
+await fetch("http://localhost:8080/api/browser/ingest", {
+  method: "POST",
+  headers: {
+    Authorization: `Bearer ${VIGIL_BROWSER_INGEST_KEY}`,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    schema_version: 1,
+    kind: "log",
+    ts: new Date().toISOString(),
+    source: "browser",
+    level: "error",
+    name: "frontend.error",
+    attrs: { path: location.pathname },
+    body: { message: "client error" },
+  }),
+});
+```
 
 ## Data Storage
 

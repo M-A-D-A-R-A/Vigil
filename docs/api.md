@@ -87,6 +87,8 @@ Rotate the ingest key for a project and return the new plaintext key once.
 
 Browser ingest keys are public, project-scoped, ingest-only keys for frontend telemetry. They are stored as digests, returned in plaintext only when created or rotated, and must be paired with an allowed browser `Origin`.
 
+They do not make the whole Vigil server browser-safe or internet-safe. Browser keys can only write browser events, but the project, query, and key-management APIs remain local-admin/trusted-network APIs until a later auth/RBAC layer exists.
+
 `POST /api/projects/{id}/browser-keys`
 
 Create a browser key and return the plaintext `browser_ingest_key` once.
@@ -173,6 +175,28 @@ Body:
 ```
 
 The browser key selects the project, so `project_id` may be omitted. If `project_id` is present, it must match the key's project. The endpoint rejects private server ingest keys, disallowed origins, missing origins, oversized payloads, and bursts above the local in-memory rate limit.
+
+Browser example:
+
+```js
+await fetch("http://localhost:8080/api/browser/ingest", {
+  method: "POST",
+  headers: {
+    Authorization: `Bearer ${VIGIL_BROWSER_INGEST_KEY}`,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    schema_version: 1,
+    kind: "log",
+    ts: new Date().toISOString(),
+    source: "browser",
+    level: "error",
+    name: "frontend.error",
+    attrs: { path: location.pathname },
+    body: { message: "client error" },
+  }),
+});
+```
 
 ### Ingest Redaction
 
