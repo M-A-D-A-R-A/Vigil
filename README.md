@@ -154,7 +154,21 @@ await vigil.metric("queue.depth", {
 });
 ```
 
-Do not bundle `VIGIL_INGEST_KEY` into browser code. Browser-safe ingest keys and frontend capture helpers are separate roadmap work.
+Do not bundle `VIGIL_INGEST_KEY` into browser code. For direct frontend telemetry, create a browser-safe ingest key with allowed origins and send events to `/api/browser/ingest`; browser capture helpers are separate roadmap work.
+
+## Browser Ingest Keys
+
+Browser ingest keys are public, project-scoped, ingest-only keys for frontend telemetry. They are separate from private server ingest keys, require exact origin allowlists, and can only write to `POST /api/browser/ingest`.
+
+Create one for a project:
+
+```sh
+curl -X POST http://localhost:8080/api/projects/proj_.../browser-keys \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"local web","allowed_origins":["http://localhost:3000"]}'
+```
+
+The response returns `browser_ingest_key` once. Use it from browser code with an allowed `Origin`; the browser endpoint infers the project from the key, so `project_id` may be omitted from the event body.
 
 ## Data Storage
 

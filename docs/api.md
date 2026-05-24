@@ -76,6 +76,35 @@ List projects without exposing stored ingest keys.
 
 Rotate the ingest key for a project and return the new plaintext key once.
 
+### Browser Ingest Keys
+
+Browser ingest keys are public, project-scoped, ingest-only keys for frontend telemetry. They are stored as digests, returned in plaintext only when created or rotated, and must be paired with an allowed browser `Origin`.
+
+`POST /api/projects/{id}/browser-keys`
+
+Create a browser key and return the plaintext `browser_ingest_key` once.
+
+Request body:
+
+```json
+{
+  "name": "local web",
+  "allowed_origins": ["http://localhost:3000", "https://app.example.com"]
+}
+```
+
+`GET /api/projects/{id}/browser-keys`
+
+List browser keys without exposing plaintext key material or key hashes.
+
+`POST /api/projects/{id}/browser-keys/{key_id}/rotate`
+
+Rotate one browser key and return the new plaintext `browser_ingest_key` once. The old key stops working immediately.
+
+`POST /api/projects/{id}/browser-keys/{key_id}/revoke`
+
+Revoke one browser key. Revoked keys cannot ingest browser events.
+
 ## Ingest
 
 Vigil's native JSON ingest remains the simplest first-run path.
@@ -106,6 +135,37 @@ Body:
   }
 }
 ```
+
+### Browser JSON Ingest
+
+`POST /api/browser/ingest`
+
+Headers:
+
+- `Authorization: Bearer <browser_ingest_key>`
+- `Content-Type: application/json`
+- `Origin: <allowed_origin>` set by the browser
+
+Body:
+
+```json
+{
+  "schema_version": 1,
+  "kind": "log",
+  "ts": "2026-05-02T12:00:00Z",
+  "source": "browser",
+  "name": "frontend.error",
+  "level": "error",
+  "attrs": {
+    "path": "/checkout"
+  },
+  "body": {
+    "message": "client error"
+  }
+}
+```
+
+The browser key selects the project, so `project_id` may be omitted. If `project_id` is present, it must match the key's project. The endpoint rejects private server ingest keys, disallowed origins, missing origins, oversized payloads, and bursts above the local in-memory rate limit.
 
 ### OpenTelemetry OTLP/HTTP
 
