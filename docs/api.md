@@ -136,6 +136,9 @@ Body:
   "source": "api",
   "name": "request.completed",
   "level": "info",
+  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+  "span_id": "00f067aa0ba902b7",
+  "parent_span_id": "4c721bf33e3caf8f",
   "attrs": {
     "route": "/users"
   },
@@ -165,6 +168,8 @@ Body:
   "source": "browser",
   "name": "frontend.error",
   "level": "error",
+  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+  "span_id": "4c721bf33e3caf8f",
   "attrs": {
     "path": "/checkout"
   },
@@ -226,7 +231,7 @@ OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20vigil_...
 OTEL_SERVICE_NAME=my-app
 ```
 
-The authenticated ingest key selects the Vigil project. OTLP resource field `service.name` becomes the Vigil `source`; OTLP logs become `kind=log`, spans become `kind=trace`, and metric data points become `kind=metric`. OpenTelemetry resource, scope, and signal attributes are preserved under `attrs.otel`, while signal-level attributes are also promoted into top-level `attrs` for normal Vigil filtering and search.
+The authenticated ingest key selects the Vigil project. OTLP resource field `service.name` becomes the Vigil `source`; OTLP logs become `kind=log`, spans become `kind=trace`, and metric data points become `kind=metric`. OpenTelemetry trace/span IDs are preserved as `trace_id` and `span_id`; span parent IDs are preserved as `parent_span_id`. OpenTelemetry resource, scope, and signal attributes are preserved under `attrs.otel`, while signal-level attributes are also promoted into top-level `attrs` for normal Vigil filtering and search.
 
 Python apps can install the optional SDK extra and configure the official OTLP/HTTP exporters:
 
@@ -252,12 +257,15 @@ Supported query params:
 - `kind`
 - `level`
 - `name`
+- `trace_id`
+- `span_id`
+- `parent_span_id`
 - `q`
 - `query`
 - `page`
 - `limit`
 
-`q` is broad full-text search across event name, source, level, attrs, and body text.
+`q` is broad full-text search across event name, source, level, trace IDs, attrs, and body text.
 
 `query` is structured search. Initial examples:
 
@@ -266,9 +274,10 @@ level = "error" && timestamp > now() - 6h
 source = "api" && attrs.route = "/login"
 name ~= "checkout"
 trace_id = "trace_123"
+parent_span_id = "span_root"
 ```
 
-Supported structured fields are `kind`, `level`, `source`, `name`, `trace_id`, `span_id`, `timestamp` / `ts`, plus one-level JSON fields such as `attrs.route` and `body.message`.
+Supported structured fields are `kind`, `level`, `source`, `name`, `trace_id`, `span_id`, `parent_span_id`, `timestamp` / `ts`, plus one-level JSON fields such as `attrs.route` and `body.message`.
 
 Responses can include:
 

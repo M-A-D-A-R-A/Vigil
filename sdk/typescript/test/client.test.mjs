@@ -8,7 +8,13 @@ import {
   VigilClient,
   VigilConfigError,
   VigilHTTPError,
+  childTraceContext,
+  continueTraceContext,
+  createTraceContext,
+  formatTraceparent,
+  parseTraceparent,
   startVigilBrowserCapture,
+  traceparentHeaders,
 } from "../dist/index.js";
 
 function fakeTransport(status = 202, payload = {}) {
@@ -107,12 +113,42 @@ test("trace sends trace fields", async () => {
   const transport = fakeTransport();
   const client = new VigilClient({ projectId: "proj_123", ingestKey: "vigil_123", transport });
 
-  await client.trace("llm.completed", { traceId: "trace-1", spanId: "span-1" });
+  await client.trace("llm.completed", { traceId: "trace-1", spanId: "span-1", parentSpanId: "span-root" });
 
   const envelope = JSON.parse(transport.calls[0].body);
   assert.equal(envelope.kind, "trace");
   assert.equal(envelope.trace_id, "trace-1");
   assert.equal(envelope.span_id, "span-1");
+  assert.equal(envelope.parent_span_id, "span-root");
+});
+
+test("traceparent helpers parse, format, and create child contexts", () => {
+  const parent = parseTraceparent("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01");
+
+  assert.deepEqual(parent, {
+    traceId: "4bf92f3577b34da6a3ce929d0e0e4736",
+    spanId: "00f067aa0ba902b7",
+    sampled: true,
+  });
+
+  assert.equal(formatTraceparent(parent), "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01");
+  assert.deepEqual(traceparentHeaders(parent), {
+    traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+  });
+
+  const child = childTraceContext(parent);
+  assert.equal(child.traceId, parent.traceId);
+  assert.equal(child.parentSpanId, parent.spanId);
+  assert.match(child.spanId, /^[0-9a-f]{16}$/);
+
+  const continued = continueTraceContext("00-4bf92f3577b34da6a3ce929d0e0e4736-1111111111111111-00");
+  assert.equal(continued.traceId, "4bf92f3577b34da6a3ce929d0e0e4736");
+  assert.equal(continued.parentSpanId, "1111111111111111");
+  assert.equal(parseTraceparent("00-00000000000000000000000000000000-00f067aa0ba902b7-01"), undefined);
+
+  const fresh = createTraceContext();
+  assert.match(fresh.traceId, /^[0-9a-f]{32}$/);
+  assert.match(fresh.spanId, /^[0-9a-f]{16}$/);
 });
 
 test("metric puts value and unit in attrs", async () => {
@@ -224,6 +260,7 @@ test("browser ingest sends browser envelope without private project id", async (
 
 test("browser capture sends safe page and fetch summaries", async () => {
   const transport = fakeTransport();
+  const fetchCalls = [];
   const fakeWindow = {
     location: { origin: "http://app.local", pathname: "/checkout" },
     document: { referrer: "http://app.local/start?token=secret" },
@@ -237,7 +274,10 @@ test("browser capture sends safe page and fetch summaries", async () => {
       pushState() {},
       replaceState() {},
     },
-    fetch: async () => ({ ok: false, status: 503, text: async () => "" }),
+    fetch: async (input, init) => {
+      fetchCalls.push({ input, init });
+      return { ok: false, status: 503, text: async () => "" };
+    },
   };
 
   const handle = startVigilBrowserCapture({
@@ -262,8 +302,11 @@ test("browser capture sends safe page and fetch summaries", async () => {
 
   const fetchEvent = bodies.find((body) => body.name === "browser.fetch_failed");
   assert.ok(fetchEvent);
+  assert.match(fetchEvent.trace_id, /^[0-9a-f]{32}$/);
+  assert.match(fetchEvent.span_id, /^[0-9a-f]{16}$/);
   assert.equal(fetchEvent.attrs.method, "POST");
   assert.equal(fetchEvent.attrs.path, "/payments");
   assert.equal(fetchEvent.attrs.status, 503);
   assert.equal(fetchEvent.attrs.duration_ms >= 0, true);
+  assert.match(fetchCalls[0].init.headers.get("traceparent"), /^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/);
 });

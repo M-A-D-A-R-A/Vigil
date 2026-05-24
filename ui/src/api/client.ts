@@ -88,6 +88,7 @@ export type EventRecord = {
   source: string;
   trace_id?: string;
   span_id?: string;
+  parent_span_id?: string;
   level?: string;
   name: string;
   attrs: Record<string, unknown>;
@@ -110,6 +111,7 @@ export type TraceEvent = {
   level?: string;
   source: string;
   span_id?: string;
+  parent_span_id?: string;
   attrs: Record<string, unknown>;
   body: unknown;
 };

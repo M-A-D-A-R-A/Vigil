@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import re
 import json
 import os
 from typing import Any, Callable, Mapping, Optional, Union
@@ -56,6 +57,62 @@ class ProjectResult:
             project=dict(payload.get("project") or {}),
             ingest_key=str(payload.get("ingest_key", "")),
         )
+
+
+@dataclass(frozen=True)
+class TraceContext:
+    trace_id: str
+    span_id: str
+    parent_span_id: Optional[str] = None
+    sampled: bool = True
+
+
+def create_trace_context(*, sampled: bool = True) -> TraceContext:
+    return TraceContext(trace_id=_random_hex(16), span_id=_random_hex(8), sampled=sampled)
+
+
+def child_trace_context(parent: Union[TraceContext, str]) -> TraceContext:
+    parsed = parse_traceparent(parent) if isinstance(parent, str) else parent
+    if parsed is None:
+        return create_trace_context()
+    return TraceContext(
+        trace_id=parsed.trace_id,
+        span_id=_random_hex(8),
+        parent_span_id=parsed.span_id,
+        sampled=parsed.sampled,
+    )
+
+
+def continue_trace_context(parent: Optional[Union[TraceContext, str]]) -> TraceContext:
+    if parent is None:
+        return create_trace_context()
+    return child_trace_context(parent)
+
+
+def parse_traceparent(header: Optional[str]) -> Optional[TraceContext]:
+    value = _clean(header).lower()
+    match = re.fullmatch(r"([0-9a-f]{2})-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})", value)
+    if not match:
+        return None
+    version, trace_id, span_id, flags = match.groups()
+    if version == "ff" or not _valid_trace_id(trace_id) or not _valid_span_id(span_id):
+        return None
+    return TraceContext(trace_id=trace_id, span_id=span_id, sampled=(int(flags, 16) & 1) == 1)
+
+
+def format_traceparent(context: TraceContext) -> str:
+    trace_id = _clean(context.trace_id).lower()
+    span_id = _clean(context.span_id).lower()
+    if not _valid_trace_id(trace_id):
+        raise VigilConfigError("trace_id must be a non-zero 32-character hex string")
+    if not _valid_span_id(span_id):
+        raise VigilConfigError("span_id must be a non-zero 16-character hex string")
+    flags = "01" if context.sampled else "00"
+    return f"00-{trace_id}-{span_id}-{flags}"
+
+
+def traceparent_headers(context: TraceContext) -> dict[str, str]:
+    return {"traceparent": format_traceparent(context)}
 
 
 class VigilClient:
@@ -154,6 +211,7 @@ class VigilClient:
         level: Optional[str] = None,
         trace_id: Optional[str] = None,
         span_id: Optional[str] = None,
+        parent_span_id: Optional[str] = None,
     ) -> IngestResult:
         self._require_ingest_config()
 
@@ -170,6 +228,7 @@ class VigilClient:
         _set_if_present(envelope, "level", level)
         _set_if_present(envelope, "trace_id", trace_id)
         _set_if_present(envelope, "span_id", span_id)
+        _set_if_present(envelope, "parent_span_id", parent_span_id)
 
         payload = self._request(
             "POST",
@@ -189,6 +248,9 @@ class VigilClient:
         body: Any = None,
         ts: Optional[Union[datetime, str]] = None,
         source: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        span_id: Optional[str] = None,
+        parent_span_id: Optional[str] = None,
     ) -> IngestResult:
         if body is None and message is not None:
             body = {"message": message}
@@ -200,6 +262,9 @@ class VigilClient:
             body=body,
             ts=ts,
             source=source,
+            trace_id=trace_id,
+            span_id=span_id,
+            parent_span_id=parent_span_id,
         )
 
     def trace(
@@ -208,6 +273,7 @@ class VigilClient:
         *,
         trace_id: str,
         span_id: Optional[str] = None,
+        parent_span_id: Optional[str] = None,
         level: str = "info",
         attrs: Optional[Mapping[str, Any]] = None,
         body: Any = None,
@@ -220,6 +286,7 @@ class VigilClient:
             level=level,
             trace_id=trace_id,
             span_id=span_id,
+            parent_span_id=parent_span_id,
             attrs=attrs,
             body=body,
             ts=ts,
@@ -355,6 +422,7 @@ class NoopVigilClient(VigilClient):
         level: Optional[str] = None,
         trace_id: Optional[str] = None,
         span_id: Optional[str] = None,
+        parent_span_id: Optional[str] = None,
     ) -> IngestResult:
         return IngestResult(event_id="", received_at="", indexed_async=False)
 
@@ -449,3 +517,18 @@ def _set_if_present(target: dict[str, Any], key: str, value: Optional[str]) -> N
     cleaned = _clean(value)
     if cleaned:
         target[key] = cleaned
+
+
+def _random_hex(bytes_count: int) -> str:
+    value = os.urandom(bytes_count)
+    if all(byte == 0 for byte in value):
+        value = value[:-1] + b"\x01"
+    return value.hex()
+
+
+def _valid_trace_id(value: str) -> bool:
+    return bool(re.fullmatch(r"[0-9a-f]{32}", value)) and value != "0" * 32
+
+
+def _valid_span_id(value: str) -> bool:
+    return bool(re.fullmatch(r"[0-9a-f]{16}", value)) and value != "0" * 16

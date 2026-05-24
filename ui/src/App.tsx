@@ -1622,6 +1622,14 @@ export default function App() {
                           <span>Trace</span>
                           <strong>{selectedEvent.trace_id || "n/a"}</strong>
                         </div>
+                        <div className="meta-tile">
+                          <span>Span</span>
+                          <strong>{selectedEvent.span_id || "n/a"}</strong>
+                        </div>
+                        <div className="meta-tile">
+                          <span>Parent</span>
+                          <strong>{selectedEvent.parent_span_id || "n/a"}</strong>
+                        </div>
                       </div>
 
                       <div className="detail-block">

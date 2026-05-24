@@ -245,7 +245,7 @@ func (p *structuredParser) parseField(tok token) (Field, error) {
 	if strings.HasPrefix(raw, "attrs.") || strings.HasPrefix(raw, "body.") {
 		return Field{}, p.errAt(tok.start, tok.end, "only one-level JSON paths are supported", "Use fields like attrs.route or body.message.")
 	}
-	return Field{}, p.errAt(tok.start, tok.end, fmt.Sprintf("unknown field %q", raw), "Use kind, level, source, name, trace_id, span_id, timestamp, attrs.foo, or body.foo.")
+	return Field{}, p.errAt(tok.start, tok.end, fmt.Sprintf("unknown field %q", raw), "Use kind, level, source, name, trace_id, span_id, parent_span_id, timestamp, attrs.foo, or body.foo.")
 }
 
 func (p *structuredParser) parseLiteral() (Literal, error) {
@@ -418,7 +418,7 @@ func validateComparison(field Field, op Operator, value Literal) error {
 
 func isCoreField(raw string) bool {
 	switch raw {
-	case "kind", "level", "source", "name", "trace_id", "span_id", "timestamp", "ts":
+	case "kind", "level", "source", "name", "trace_id", "span_id", "parent_span_id", "timestamp", "ts":
 		return true
 	default:
 		return false

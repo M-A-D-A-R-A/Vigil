@@ -90,6 +90,7 @@ func TracesToEnvelopes(req *tracev1.TracesData, now time.Time) ([]event.Envelope
 					Source:        source,
 					TraceID:       hexID(span.GetTraceId(), 16),
 					SpanID:        hexID(span.GetSpanId(), 8),
+					ParentSpanID:  hexID(span.GetParentSpanId(), 8),
 					Level:         spanLevel(span.GetStatus()),
 					Name:          nonEmpty(span.GetName(), "otel.span"),
 					Attrs:         mustJSON(attrs, "{}"),

@@ -348,6 +348,7 @@ func TestOTLPHTTPIngestEndpoints(t *testing.T) {
 
 	traceID := []byte{15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0}
 	spanID := []byte{8, 7, 6, 5, 4, 3, 2, 1}
+	parentSpanID := []byte{1, 3, 5, 7, 9, 11, 13, 15}
 	postOTLPProto(t, server.URL+"/v1/traces", key, &tracev1.TracesData{
 		ResourceSpans: []*tracev1.ResourceSpans{{
 			Resource: otelResource("checkout-api"),
@@ -356,6 +357,7 @@ func TestOTLPHTTPIngestEndpoints(t *testing.T) {
 				Spans: []*tracev1.Span{{
 					TraceId:           traceID,
 					SpanId:            spanID,
+					ParentSpanId:      parentSpanID,
 					Name:              "POST /checkout",
 					Kind:              tracev1.Span_SPAN_KIND_SERVER,
 					StartTimeUnixNano: uint64(baseTS.Add(time.Second).UnixNano()),
@@ -428,6 +430,12 @@ func TestOTLPHTTPIngestEndpoints(t *testing.T) {
 	getJSON(t, server.URL+"/api/traces?project_id="+projectID, &traces)
 	if int(traces["total"].(float64)) != 2 {
 		t.Fatalf("expected log and span trace summaries, got %v", traces["total"])
+	}
+	traceLogs := map[string]any{}
+	getJSON(t, server.URL+"/api/logs?project_id="+projectID+"&kind=trace", &traceLogs)
+	traceEvent := traceLogs["events"].([]any)[0].(map[string]any)
+	if traceEvent["parent_span_id"] != "01030507090b0d0f" {
+		t.Fatalf("expected OTLP parent span id, got %v", traceEvent["parent_span_id"])
 	}
 
 	metrics := map[string]any{}
@@ -602,6 +610,7 @@ func TestProjectLogFiltersAgainstSeededProject(t *testing.T) {
 			"source":         "api",
 			"trace_id":       "trace-123",
 			"span_id":        "span-root",
+			"parent_span_id": "span-browser",
 			"level":          "info",
 			"name":           "request.completed",
 			"body":           map[string]any{"message": "Request completed"},
@@ -651,6 +660,9 @@ func TestProjectLogFiltersAgainstSeededProject(t *testing.T) {
 
 	assertLogTotal(t, baseLogsURL+"&kind=log", 3)
 	assertLogTotal(t, baseLogsURL+"&kind=trace", 1)
+	assertLogTotal(t, baseLogsURL+"&trace_id=trace-123", 1)
+	assertLogTotal(t, baseLogsURL+"&span_id=span-root", 1)
+	assertLogTotal(t, baseLogsURL+"&parent_span_id=span-browser", 1)
 	assertLogTotal(t, baseLogsURL+"&level=error", 1)
 	assertLogTotal(t, baseLogsURL+"&name=agent.run.failed", 1)
 	assertLogTotal(t, baseLogsURL+"&name=cleanup", 0)
@@ -707,6 +719,9 @@ func TestProjectLogFiltersAgainstSeededProject(t *testing.T) {
 	firstPageTwoEvent := eventsPageTwo[0].(map[string]any)
 	if got := firstPageTwoEvent["name"]; got != "request.completed" {
 		t.Fatalf("expected page-2 first event request.completed, got %v", got)
+	}
+	if got := firstPageTwoEvent["parent_span_id"]; got != "span-browser" {
+		t.Fatalf("expected parent_span_id in logs response, got %v", got)
 	}
 }
 
