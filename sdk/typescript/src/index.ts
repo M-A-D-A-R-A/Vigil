@@ -32,6 +32,7 @@ export interface VigilEnv {
   VIGIL_BASE_URL?: string;
   VIGIL_PROJECT_ID?: string;
   VIGIL_INGEST_KEY?: string;
+  VIGIL_BROWSER_INGEST_KEY?: string;
   VIGIL_SOURCE?: string;
   [key: string]: string | undefined;
 }
@@ -93,6 +94,86 @@ export interface MetricOptions {
   body?: JsonValue | undefined;
   ts?: Date | string | undefined;
   source?: string | undefined;
+}
+
+export interface BrowserVigilClientOptions {
+  baseUrl?: string | undefined;
+  browserIngestKey?: string | undefined;
+  source?: string | undefined;
+  timeoutMs?: number | undefined;
+  transport?: Transport | undefined;
+}
+
+export interface BrowserFromEnvOptions {
+  env?: VigilEnv | undefined;
+  source?: string | undefined;
+  timeoutMs?: number | undefined;
+  transport?: Transport | undefined;
+  optional?: boolean | undefined;
+}
+
+export interface BrowserIngestOptions {
+  kind?: EventKind | undefined;
+  name: string;
+  attrs?: JsonObject | undefined;
+  body?: JsonValue | undefined;
+  ts?: Date | string | undefined;
+  source?: string | undefined;
+  level?: string | undefined;
+  traceId?: string | undefined;
+  spanId?: string | undefined;
+}
+
+export interface BrowserLogOptions {
+  message?: string | undefined;
+  level?: string | undefined;
+  attrs?: JsonObject | undefined;
+  body?: JsonValue | undefined;
+  ts?: Date | string | undefined;
+  source?: string | undefined;
+}
+
+export interface BrowserCaptureOptions extends BrowserVigilClientOptions {
+  client?: BrowserVigilClient | undefined;
+  captureConsoleErrors?: boolean | undefined;
+  captureErrors?: boolean | undefined;
+  captureUnhandledRejections?: boolean | undefined;
+  capturePageViews?: boolean | undefined;
+  captureRouteChanges?: boolean | undefined;
+  captureFetchFailures?: boolean | undefined;
+  baseAttrs?: JsonObject | undefined;
+  window?: BrowserWindowLike | undefined;
+}
+
+export interface BrowserCaptureHandle {
+  client: BrowserVigilClient;
+  stop(): void;
+}
+
+export interface BrowserWindowLike {
+  location?: {
+    origin?: string | undefined;
+    pathname?: string | undefined;
+  } | undefined;
+  document?: {
+    referrer?: string | undefined;
+  } | undefined;
+  navigator?: {
+    language?: string | undefined;
+    userAgent?: string | undefined;
+  } | undefined;
+  innerWidth?: number | undefined;
+  innerHeight?: number | undefined;
+  console?: {
+    error: (...args: unknown[]) => void;
+  } | undefined;
+  history?: {
+    pushState: (...args: any[]) => void;
+    replaceState: (...args: any[]) => void;
+  } | undefined;
+  fetch?: (input: any, init?: any) => Promise<{ ok: boolean; status: number }>;
+  addEventListener(type: string, listener: (event: unknown) => void): void;
+  removeEventListener(type: string, listener: (event: unknown) => void): void;
 }
 
 export type QueryValue = string | number | boolean | Date | null | undefined;
@@ -387,6 +468,196 @@ export class NoopVigilClient extends VigilClient {
   }
 }
 
+export class BrowserVigilClient {
+  readonly baseUrl: string;
+  readonly browserIngestKey: string;
+  readonly source: string;
+  readonly timeoutMs: number;
+  readonly disabled: boolean = false;
+  readonly disabledReason: string = "";
+
+  protected readonly transport: Transport;
+
+  constructor(options: BrowserVigilClientOptions = {}) {
+    this.baseUrl = normalizeBaseUrl(options.baseUrl ?? browserDefaultBaseUrl());
+    this.browserIngestKey = clean(options.browserIngestKey);
+    this.source = clean(options.source) || "browser";
+    this.timeoutMs = options.timeoutMs ?? 10_000;
+    this.transport = options.transport ?? fetchTransport;
+  }
+
+  static fromEnv(options: BrowserFromEnvOptions = {}): BrowserVigilClient {
+    const env = options.env ?? defaultEnv();
+    const baseUrl = env.VIGIL_BASE_URL ?? browserDefaultBaseUrl();
+    const browserIngestKey = env.VIGIL_BROWSER_INGEST_KEY;
+    const source = options.source ?? env.VIGIL_SOURCE ?? "browser";
+
+    if (!clean(browserIngestKey)) {
+      if (options.optional) {
+        return new NoopBrowserVigilClient({
+          baseUrl,
+          browserIngestKey,
+          source,
+          timeoutMs: options.timeoutMs,
+          disabledReason: "missing required environment variable: VIGIL_BROWSER_INGEST_KEY",
+        });
+      }
+      throw new VigilConfigError("missing required environment variable: VIGIL_BROWSER_INGEST_KEY");
+    }
+
+    return new BrowserVigilClient({
+      baseUrl,
+      browserIngestKey,
+      source,
+      timeoutMs: options.timeoutMs,
+      transport: options.transport,
+    });
+  }
+
+  async ingest(options: BrowserIngestOptions): Promise<IngestResult> {
+    this.requireBrowserIngestConfig();
+    const envelope: Record<string, JsonValue | undefined> = {
+      schema_version: 1,
+      kind: (options.kind ?? "log").toLowerCase(),
+      ts: formatTimestamp(options.ts),
+      source: clean(options.source) || this.source,
+      name: required("name", options.name),
+      attrs: options.attrs ?? {},
+      body: options.body ?? null,
+    };
+    setIfPresent(envelope, "level", options.level);
+    setIfPresent(envelope, "trace_id", options.traceId);
+    setIfPresent(envelope, "span_id", options.spanId);
+
+    const payload = await requestWithTransport(this.transport, {
+      baseUrl: this.baseUrl,
+      method: "POST",
+      path: "/api/browser/ingest",
+      timeoutMs: this.timeoutMs,
+      headers: { Authorization: `Bearer ${this.browserIngestKey}` },
+      jsonBody: envelope,
+    });
+    return ingestResultFromJson(payload);
+  }
+
+  async log(name: string, options: BrowserLogOptions = {}): Promise<IngestResult> {
+    const body = options.body === undefined && options.message !== undefined
+      ? { message: options.message }
+      : options.body;
+    return this.ingest({
+      kind: "log",
+      name,
+      level: options.level ?? "info",
+      attrs: options.attrs,
+      body,
+      ts: options.ts,
+      source: options.source,
+    });
+  }
+
+  protected requireBrowserIngestConfig(): void {
+    if (!this.browserIngestKey) {
+      throw new VigilConfigError("missing required browser ingest configuration: browserIngestKey");
+    }
+  }
+}
+
+export class NoopBrowserVigilClient extends BrowserVigilClient {
+  override readonly disabled = true;
+  override readonly disabledReason: string;
+
+  constructor(options: BrowserVigilClientOptions & { disabledReason?: string | undefined } = {}) {
+    super({ ...options, transport: noopTransport });
+    this.disabledReason = options.disabledReason ?? "Vigil browser capture is disabled";
+  }
+
+  override async ingest(_options: BrowserIngestOptions): Promise<IngestResult> {
+    return { eventId: "", receivedAt: "", indexedAsync: false };
+  }
+}
+
+export function startVigilBrowserCapture(options: BrowserCaptureOptions = {}): BrowserCaptureHandle {
+  const win = options.window ?? currentWindow();
+  const client = options.client ?? new BrowserVigilClient(options);
+  const cleanup: Array<() => void> = [];
+  const captureConsoleErrors = options.captureConsoleErrors ?? true;
+  const captureErrors = options.captureErrors ?? true;
+  const captureUnhandledRejections = options.captureUnhandledRejections ?? true;
+  const capturePageViews = options.capturePageViews ?? true;
+  const captureRouteChanges = options.captureRouteChanges ?? true;
+  const captureFetchFailures = options.captureFetchFailures ?? true;
+  const baseAttrs = options.baseAttrs ?? {};
+
+  if (!win) {
+    return { client, stop: () => undefined };
+  }
+
+  const send = (name: string, attrs: JsonObject = {}, body: JsonValue = null, level = "error"): void => {
+    void client.log(name, {
+      level,
+      attrs: { ...browserContext(win), ...baseAttrs, ...attrs },
+      body,
+    }).catch(() => undefined);
+  };
+
+  if (capturePageViews) {
+    send("browser.page_view", {}, null, "info");
+  }
+
+  if (captureErrors) {
+    const onError = (event: unknown): void => {
+      const errorEvent = objectFromUnknown(event);
+      send("browser.error", {
+        message: safeString(errorEvent["message"]),
+        filename: pathOnly(stringFromUnknown(errorEvent["filename"])),
+        line: numberFromUnknown(errorEvent["lineno"]),
+        column: numberFromUnknown(errorEvent["colno"]),
+      }, errorBody(errorEvent["error"], stringFromUnknown(errorEvent["message"]) || "Browser error"));
+    };
+    win.addEventListener("error", onError);
+    cleanup.push(() => win.removeEventListener("error", onError));
+  }
+
+  if (captureUnhandledRejections) {
+    const onUnhandledRejection = (event: unknown): void => {
+      const rejectionEvent = objectFromUnknown(event);
+      send("browser.unhandled_rejection", {}, errorBody(rejectionEvent["reason"], "Unhandled promise rejection"));
+    };
+    win.addEventListener("unhandledrejection", onUnhandledRejection);
+    cleanup.push(() => win.removeEventListener("unhandledrejection", onUnhandledRejection));
+  }
+
+  if (captureConsoleErrors && win.console?.error) {
+    const originalError = win.console.error.bind(win.console);
+    win.console.error = (...args: unknown[]): void => {
+      send("browser.console_error", {}, { args: args.slice(0, 5).map(summaryString) });
+      originalError(...args);
+    };
+    cleanup.push(() => {
+      if (win.console) {
+        win.console.error = originalError;
+      }
+    });
+  }
+
+  if (captureRouteChanges) {
+    installRouteCapture(win, send, cleanup);
+  }
+
+  if (captureFetchFailures && typeof win.fetch === "function") {
+    installFetchCapture(win, send, cleanup);
+  }
+
+  return {
+    client,
+    stop() {
+      while (cleanup.length > 0) {
+        cleanup.pop()?.();
+      }
+    },
+  };
+}
+
 async function fetchTransport(request: TransportRequest): Promise<TransportResponse> {
   const fetchFn = globalThis.fetch;
   if (typeof fetchFn !== "function") {
@@ -413,6 +684,39 @@ async function fetchTransport(request: TransportRequest): Promise<TransportRespo
 
 function noopTransport(_request: TransportRequest): TransportResponse {
   return { status: 204, body: "{}" };
+}
+
+async function requestWithTransport(
+  transport: Transport,
+  options: {
+    baseUrl: string;
+    method: string;
+    path: string;
+    timeoutMs: number;
+    headers?: Record<string, string> | undefined;
+    jsonBody?: unknown;
+  },
+): Promise<Record<string, unknown>> {
+  const headers: Record<string, string> = { Accept: "application/json", ...(options.headers ?? {}) };
+  let body: string | undefined;
+  if (options.jsonBody !== undefined) {
+    body = JSON.stringify(options.jsonBody);
+    headers["Content-Type"] = "application/json";
+  }
+  const response = await transport({
+    method: options.method,
+    url: options.baseUrl + options.path,
+    headers,
+    body,
+    timeoutMs: options.timeoutMs,
+  });
+  if (response.status < 200 || response.status >= 300) {
+    throw new VigilHTTPError(response.status, errorMessage(response.status, response.body), response.body);
+  }
+  if (!response.body) {
+    return {};
+  }
+  return objectFromUnknown(JSON.parse(response.body));
 }
 
 function normalizeBaseUrl(raw: string): string {
@@ -479,6 +783,15 @@ function defaultEnv(): VigilEnv {
   return maybeProcess.process?.env ?? {};
 }
 
+function currentWindow(): BrowserWindowLike | undefined {
+  return typeof window === "undefined" ? undefined : window;
+}
+
+function browserDefaultBaseUrl(): string {
+  const win = currentWindow();
+  return win?.location?.origin ?? "http://localhost:8080";
+}
+
 function required(name: string, value: unknown): string {
   const cleaned = clean(value);
   if (!cleaned) {
@@ -507,4 +820,168 @@ function objectFromUnknown(value: unknown): Record<string, unknown> {
 
 function stringFromUnknown(value: unknown): string {
   return value === undefined || value === null ? "" : String(value);
+}
+
+function numberFromUnknown(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function browserContext(win: BrowserWindowLike): JsonObject {
+  return {
+    path: win.location?.pathname ?? "",
+    referrer: safeReferrer(win.document?.referrer),
+    language: win.navigator?.language,
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    viewport_width: win.innerWidth,
+    viewport_height: win.innerHeight,
+    user_agent: win.navigator?.userAgent,
+  };
+}
+
+function safeReferrer(raw: string | undefined): string {
+  if (!raw) {
+    return "";
+  }
+  return pathOnly(raw);
+}
+
+function pathOnly(raw: string | undefined): string {
+  if (!raw) {
+    return "";
+  }
+  try {
+    const parsed = new URL(raw, currentWindow()?.location?.origin ?? "http://localhost");
+    return parsed.pathname;
+  } catch {
+    return "";
+  }
+}
+
+function errorBody(error: unknown, fallbackMessage: string): JsonObject {
+  if (error instanceof Error) {
+    return {
+      message: safeString(error.message || fallbackMessage),
+      name: safeString(error.name),
+      stack: safeString(error.stack),
+    };
+  }
+  return { message: safeString(fallbackMessage), value: summaryString(error) };
+}
+
+function summaryString(value: unknown): string {
+  if (value instanceof Error) {
+    return `${value.name}: ${value.message}`.slice(0, 1_000);
+  }
+  if (typeof value === "string") {
+    return value.slice(0, 1_000);
+  }
+  try {
+    return JSON.stringify(value)?.slice(0, 1_000) ?? String(value);
+  } catch {
+    return String(value).slice(0, 1_000);
+  }
+}
+
+function safeString(value: unknown): string {
+  return value === undefined || value === null ? "" : String(value).slice(0, 2_000);
+}
+
+function installRouteCapture(
+  win: BrowserWindowLike,
+  send: (name: string, attrs?: JsonObject, body?: JsonValue, level?: string) => void,
+  cleanup: Array<() => void>,
+): void {
+  const history = win.history;
+  if (!history) {
+    return;
+  }
+
+  let lastPath = win.location?.pathname ?? "";
+  const captureRoute = (): void => {
+    const nextPath = win.location?.pathname ?? "";
+    if (nextPath === lastPath) {
+      return;
+    }
+    const previousPath = lastPath;
+    lastPath = nextPath;
+    send("browser.route_change", { previous_path: previousPath, path: nextPath }, null, "info");
+  };
+
+  const originalPushState = history.pushState.bind(history);
+  const originalReplaceState = history.replaceState.bind(history);
+  history.pushState = (...args): void => {
+    originalPushState(...args);
+    captureRoute();
+  };
+  history.replaceState = (...args): void => {
+    originalReplaceState(...args);
+    captureRoute();
+  };
+  win.addEventListener("popstate", captureRoute);
+  cleanup.push(() => {
+    history.pushState = originalPushState;
+    history.replaceState = originalReplaceState;
+    win.removeEventListener("popstate", captureRoute);
+  });
+}
+
+function installFetchCapture(
+  win: BrowserWindowLike,
+  send: (name: string, attrs?: JsonObject, body?: JsonValue, level?: string) => void,
+  cleanup: Array<() => void>,
+): void {
+  if (!win.fetch) {
+    return;
+  }
+  const originalFetch = win.fetch.bind(win);
+  win.fetch = async (input: unknown, init?: { method?: string | undefined }): Promise<{ ok: boolean; status: number }> => {
+    const started = Date.now();
+    const method = fetchMethod(input, init);
+    const path = fetchPath(input);
+    try {
+      const response = await originalFetch(input, init);
+      if (!response.ok) {
+        send("browser.fetch_failed", {
+          method,
+          path,
+          status: response.status,
+          duration_ms: Date.now() - started,
+        });
+      }
+      return response;
+    } catch (error) {
+      send("browser.fetch_error", {
+        method,
+        path,
+        duration_ms: Date.now() - started,
+      }, errorBody(error, "fetch failed"));
+      throw error;
+    }
+  };
+  cleanup.push(() => {
+    win.fetch = originalFetch;
+  });
+}
+
+function fetchMethod(input: unknown, init?: { method?: string | undefined }): string {
+  if (init?.method) {
+    return init.method.toUpperCase();
+  }
+  if (typeof Request !== "undefined" && input instanceof Request) {
+    return input.method.toUpperCase();
+  }
+  return "GET";
+}
+
+function fetchPath(input: unknown): string {
+  if (typeof input === "string") {
+    return pathOnly(input);
+  }
+  if (input instanceof URL) {
+    return input.pathname;
+  }
+  if (typeof Request !== "undefined" && input instanceof Request) {
+    return pathOnly(input.url);
+  }
+  return "";
 }

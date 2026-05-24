@@ -2,10 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  BrowserVigilClient,
   NoopVigilClient,
+  NoopBrowserVigilClient,
   VigilClient,
   VigilConfigError,
   VigilHTTPError,
+  startVigilBrowserCapture,
 } from "../dist/index.js";
 
 function fakeTransport(status = 202, payload = {}) {
@@ -159,4 +162,108 @@ test("http errors include server message", async () => {
       && error.statusCode === 401
       && error.message.includes("authorization header is required"),
   );
+});
+
+test("browser fromEnv reads public browser ingest key", () => {
+  const transport = fakeTransport();
+  const client = BrowserVigilClient.fromEnv({
+    env: {
+      VIGIL_BASE_URL: "http://localhost:8080/",
+      VIGIL_BROWSER_INGEST_KEY: "vigil_browser_123",
+    },
+    transport,
+  });
+
+  assert.equal(client.baseUrl, "http://localhost:8080");
+  assert.equal(client.browserIngestKey, "vigil_browser_123");
+});
+
+test("browser fromEnv optional returns noop client", async () => {
+  const client = BrowserVigilClient.fromEnv({
+    env: { VIGIL_BASE_URL: "http://localhost:8080" },
+    optional: true,
+  });
+
+  assert.ok(client instanceof NoopBrowserVigilClient);
+  const result = await client.log("browser.started");
+  assert.deepEqual(result, { eventId: "", receivedAt: "", indexedAsync: false });
+});
+
+test("browser ingest sends browser envelope without private project id", async () => {
+  const transport = fakeTransport();
+  const client = new BrowserVigilClient({
+    baseUrl: "http://vigil.local",
+    browserIngestKey: "vigil_browser_123",
+    transport,
+  });
+
+  await client.log("frontend.error", {
+    level: "error",
+    message: "client exploded",
+    attrs: { path: "/checkout" },
+    ts: new Date("2026-05-10T01:02:03Z"),
+  });
+
+  const call = transport.calls[0];
+  assert.equal(call.method, "POST");
+  assert.equal(call.url, "http://vigil.local/api/browser/ingest");
+  assert.equal(call.headers.Authorization, "Bearer vigil_browser_123");
+  const envelope = JSON.parse(call.body);
+  assert.equal(envelope.project_id, undefined);
+  assert.deepEqual(envelope, {
+    schema_version: 1,
+    kind: "log",
+    ts: "2026-05-10T01:02:03.000Z",
+    source: "browser",
+    name: "frontend.error",
+    attrs: { path: "/checkout" },
+    body: { message: "client exploded" },
+    level: "error",
+  });
+});
+
+test("browser capture sends safe page and fetch summaries", async () => {
+  const transport = fakeTransport();
+  const fakeWindow = {
+    location: { origin: "http://app.local", pathname: "/checkout" },
+    document: { referrer: "http://app.local/start?token=secret" },
+    navigator: { language: "en-US", userAgent: "TestBrowser/1.0" },
+    innerWidth: 1280,
+    innerHeight: 720,
+    console: { error() {} },
+    addEventListener() {},
+    removeEventListener() {},
+    history: {
+      pushState() {},
+      replaceState() {},
+    },
+    fetch: async () => ({ ok: false, status: 503, text: async () => "" }),
+  };
+
+  const handle = startVigilBrowserCapture({
+    baseUrl: "http://vigil.local",
+    browserIngestKey: "vigil_browser_123",
+    transport,
+    window: fakeWindow,
+    captureConsoleErrors: false,
+    captureErrors: false,
+    captureUnhandledRejections: false,
+    captureRouteChanges: false,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await fakeWindow.fetch("http://api.local/payments?secret=abc", { method: "POST" });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  handle.stop();
+
+  const bodies = transport.calls.map((call) => JSON.parse(call.body));
+  assert.equal(bodies[0].name, "browser.page_view");
+  assert.equal(bodies[0].attrs.path, "/checkout");
+  assert.equal(bodies[0].attrs.referrer, "/start");
+
+  const fetchEvent = bodies.find((body) => body.name === "browser.fetch_failed");
+  assert.ok(fetchEvent);
+  assert.equal(fetchEvent.attrs.method, "POST");
+  assert.equal(fetchEvent.attrs.path, "/payments");
+  assert.equal(fetchEvent.attrs.status, 503);
+  assert.equal(fetchEvent.attrs.duration_ms >= 0, true);
 });
