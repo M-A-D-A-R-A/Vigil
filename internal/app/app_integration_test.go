@@ -448,6 +448,114 @@ func TestOTLPHTTPIngestEndpoints(t *testing.T) {
 	}
 }
 
+func TestAgentRunIngestAndReplay(t *testing.T) {
+	cfg := config.Config{
+		Addr:            ":0",
+		DataDir:         t.TempDir(),
+		MaxEventBytes:   1 << 20,
+		SegmentMaxBytes: 10 * 1024 * 1024,
+	}
+
+	app, err := New(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+	defer app.Close()
+
+	server := httptest.NewServer(app.Handler)
+	defer server.Close()
+
+	createResp := map[string]any{}
+	postJSON(t, server.URL+"/api/projects", map[string]string{"name": "agent-runs"}, &createResp)
+	project := createResp["project"].(map[string]any)
+	projectID := project["id"].(string)
+	key := createResp["ingest_key"].(string)
+
+	runID := "run_integration_1"
+	baseTS := time.Now().UTC()
+
+	postIngest(t, server.URL, key, map[string]any{
+		"schema_version": 1,
+		"project_id":     projectID,
+		"kind":           "run",
+		"run_id":         runID,
+		"ts":             baseTS.Format(time.RFC3339),
+		"source":         "pi",
+		"name":           "run.started",
+		"attrs": map[string]any{
+			"run":    map[string]any{"repo": "/repo", "branch": "main", "model": "test-model"},
+			"status": "running",
+			"prompt": "fix the bug",
+		},
+	})
+	postIngest(t, server.URL, key, map[string]any{
+		"schema_version": 1,
+		"project_id":     projectID,
+		"kind":           "run_step",
+		"run_id":         runID,
+		"step_type":      "decision",
+		"ts":             baseTS.Add(time.Second).Format(time.RFC3339),
+		"source":         "pi",
+		"name":           "assistant.decision",
+		"attrs":          map[string]any{"status": "success", "total_tokens": 120, "cost_usd": 0.002},
+		"body":           map[string]any{"thinking": "run the tests"},
+	})
+	postIngest(t, server.URL, key, map[string]any{
+		"schema_version": 1,
+		"project_id":     projectID,
+		"kind":           "run_step",
+		"run_id":         runID,
+		"step_type":      "tool_call",
+		"ts":             baseTS.Add(2 * time.Second).Format(time.RFC3339),
+		"source":         "pi",
+		"name":           "bash",
+		"attrs":          map[string]any{"status": "error", "duration_ms": 10},
+	})
+	postIngest(t, server.URL, key, map[string]any{
+		"schema_version": 1,
+		"project_id":     projectID,
+		"kind":           "run",
+		"run_id":         runID,
+		"ts":             baseTS.Add(3 * time.Second).Format(time.RFC3339),
+		"source":         "pi",
+		"name":           "run.completed",
+		"attrs":          map[string]any{"status": "failed", "failure_class": "test_failure"},
+	})
+
+	waitFor(t, 3*time.Second, func() bool {
+		result := map[string]any{}
+		getJSON(t, server.URL+"/api/runs?project_id="+projectID, &result)
+		return int(result["total"].(float64)) == 1
+	})
+
+	runs := map[string]any{}
+	getJSON(t, server.URL+"/api/runs?project_id="+projectID, &runs)
+	run := runs["runs"].([]any)[0].(map[string]any)
+	if run["status"] != "failed" {
+		t.Fatalf("expected failed run, got %v", run["status"])
+	}
+	if int(run["step_count"].(float64)) != 2 {
+		t.Fatalf("expected 2 steps, got %v", run["step_count"])
+	}
+	if run["total_tokens"].(float64) != 120 {
+		t.Fatalf("expected 120 tokens, got %v", run["total_tokens"])
+	}
+	if run["failure_class"] != "test_failure" {
+		t.Fatalf("expected failure class, got %v", run["failure_class"])
+	}
+
+	detail := map[string]any{}
+	getJSON(t, server.URL+"/api/runs/"+runID, &detail)
+	steps := detail["steps"].([]any)
+	if len(steps) != 2 {
+		t.Fatalf("expected 2 run steps, got %d", len(steps))
+	}
+	first := steps[0].(map[string]any)
+	if first["step_type"] != "decision" {
+		t.Fatalf("expected decision step first, got %v", first["step_type"])
+	}
+}
+
 func TestWarningsAndRetentionFlow(t *testing.T) {
 	cfg := config.Config{
 		Addr:            ":0",

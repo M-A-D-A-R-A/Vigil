@@ -205,6 +205,85 @@ await fetch("http://localhost:8080/api/browser/ingest", {
 });
 ```
 
+## Agent Traces
+
+Vigil can record AI coding-agent sessions as **runs** with ordered steps, so you can replay what an agent did, what it decided, what it cost, and why it failed. See [docs/agent-traces.md](docs/agent-traces.md) for the full model, contract, and SDK helpers.
+
+A run carries lifecycle metadata (source, repo, branch, worktree, model, status, tokens, cost, failure class), and each step is one of `prompt`, `decision` (model thinking + text), `tool_call`, `tool_result`, `model_change`, or `thinking_change`.
+
+Ingest a run directly:
+
+```sh
+curl -X POST http://localhost:8080/api/ingest \
+  -H "Authorization: Bearer vigil_..." \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "schema_version": 1,
+    "project_id": "proj_...",
+    "kind": "run",
+    "run_id": "run_123",
+    "ts": "2026-05-24T12:00:00Z",
+    "source": "pi",
+    "name": "pi.session",
+    "attrs": { "run": { "repo": "/repo", "branch": "main" }, "status": "running" }
+  }'
+```
+
+Run steps use `"kind": "run_step"` with `run_id` and `step_type`.
+
+Query runs:
+
+```sh
+curl 'http://localhost:8080/api/runs?project_id=proj_...'
+curl 'http://localhost:8080/api/runs/run_123'
+```
+
+The UI shows runs in the **Runs** tab with a step-by-step replay, including model reasoning, tool arguments, durations, tokens, and cost.
+
+The first producer is a Pi extension at `integrations/pi/vigil.ts`:
+
+```sh
+cp integrations/pi/vigil.ts ~/.pi/agent/extensions/vigil.ts
+```
+
+It reads the `vigil init` config, or `VIGIL_BASE_URL`, `VIGIL_PROJECT_ID`, and `VIGIL_INGEST_KEY`, and streams prompts, model decisions, tool calls, and tool results for every Pi session. See [integrations/pi/README.md](integrations/pi/README.md).
+
+Producers resolve the target project in this order:
+
+1. process environment (`VIGIL_*`)
+2. nearest `.env` walking up from the working directory
+3. the global `vigil init` / `vigil use` config
+
+So a folder owns its project when it has a `.env`, and everything else falls back to the global project. In a Pi session, run `/vigil-project` to list projects and pin the session to a different one.
+
+### SDK helpers
+
+Any app or agent framework can emit runs with the Python or TypeScript SDK, correlating steps with app traces via `trace_id` / `span_id`:
+
+```python
+from vigil_sdk import VigilClient
+
+vigil = VigilClient.from_env()
+
+with vigil.agent_run("support-agent", trace_id=request_trace_id, source="my-app") as run:
+    run.decision(thought="look up the order", model="gpt-4o", tokens=820, cost_usd=0.004)
+    run.tool_call("search_orders", {"user_id": 42})
+    run.tool_result("search_orders", status="success", duration_ms=18)
+```
+
+```ts
+import { VigilClient } from "vigil-observability";
+
+const vigil = VigilClient.fromEnv();
+const run = await vigil.agentRun("support-agent", { traceId: requestTraceId, source: "my-app" });
+await run.decision({ thought: "look up the order", model: "gpt-4o", tokens: 820, costUsd: 0.004 });
+await run.toolCall("search_orders", { userId: 42 });
+await run.toolResult("search_orders", { status: "success", durationMs: 18 });
+await run.finish();
+```
+
+Because runs and steps carry `trace_id`, a single trace in one project can show a frontend event, a backend span, and the agent run it triggered. The Runs tab links each step to its trace, and the trace view links agent steps back to their run.
+
 ## Data Storage
 
 `vigil init` does not choose where log files live. It configures your app to send data to a running Vigil server. The server owns the on-disk data directory.
@@ -293,6 +372,7 @@ make bench ARGS="-events 5000 -concurrency 16 -query-runs 25"
 - `ui/` - React + TypeScript + Vite frontend
 - `sdk/python` - Python SDK package
 - `sdk/typescript` - TypeScript SDK package
+- `integrations/pi` - Pi agent-trace producer
 - `web/dist` - built frontend assets
 - `docs/` - usage and operations docs
 - `test/` - integration, e2e, and fixtures

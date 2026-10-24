@@ -81,6 +81,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/logs/tail", s.handleLogsTail)
 	mux.HandleFunc("GET /api/traces", s.handleTraces)
 	mux.HandleFunc("GET /api/stats", s.handleStats)
+	mux.HandleFunc("GET /api/runs", s.handleRuns)
+	mux.HandleFunc("GET /api/runs/{run_id}", s.handleRun)
 	mux.Handle("/", s.handleSPA())
 	return mux
 }
@@ -480,6 +482,29 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	result, err := s.store.GetStats(filters)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
+	filters, err := query.ParseRangeFilters(r.URL.Query(), time.Now().UTC())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	result, err := s.store.ListRuns(filters)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
+	result, err := s.store.GetRun(r.PathValue("run_id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)

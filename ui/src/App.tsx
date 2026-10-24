@@ -6,6 +6,8 @@ import {
   EventRecord,
   getHealth,
   getLogs,
+  getRuns,
+  getRun,
   getStats,
   getTraces,
   listProjects,
@@ -13,12 +15,15 @@ import {
   QueryError,
   regenerateProjectKey,
   ResultWarning,
+  RunDetail,
+  RunList,
+  RunStep,
   StatsSummary,
   TraceResponse
 } from "./api/client";
 import { usePolling } from "./hooks/usePolling";
 
-type Tab = "logs" | "traces" | "stats";
+type Tab = "logs" | "traces" | "stats" | "runs";
 type QuickRange = "5m" | "15m" | "1h" | "6h" | "24h" | "custom";
 type ThemeMode = "light" | "dark";
 type TailConnectionState = "idle" | "connecting" | "open" | "error";
@@ -367,7 +372,7 @@ function readRoute(): RouteState {
   const parts = window.location.pathname.split("/").filter(Boolean);
   if (parts.length >= 2 && parts[0] === "projects") {
     const tab = parts[2];
-    if (tab === "logs" || tab === "traces" || tab === "stats" || tab === undefined) {
+    if (tab === "logs" || tab === "traces" || tab === "stats" || tab === "runs" || tab === undefined) {
       return { page: "project", projectId: parts[1], tab: (tab ?? "logs") as Tab };
     }
   }
@@ -405,6 +410,44 @@ function themeLabel(theme: ThemeMode) {
   return theme === "dark" ? "Dark" : "Light";
 }
 
+function runStatusTone(status: string) {
+  if (status === "failed" || status === "canceled") return "error";
+  if (status === "running") return "warn";
+  return "ok";
+}
+
+function stepBodyRecord(step: RunStep): Record<string, unknown> {
+  return asRecord(step.body) ?? {};
+}
+
+function stepThinking(step: RunStep): string {
+  const value = stepBodyRecord(step).thinking;
+  return typeof value === "string" ? value : "";
+}
+
+function stepText(step: RunStep): string {
+  const body = stepBodyRecord(step);
+  const value = body.text ?? body.message ?? body.plan;
+  return typeof value === "string" ? value : "";
+}
+
+function stepArgs(step: RunStep): string {
+  const value = stepBodyRecord(step).args;
+  if (value === undefined) return "";
+  return typeof value === "string" ? value : JSON.stringify(value, null, 2);
+}
+
+function stepTokens(step: RunStep): string {
+  const attrs = asRecord(step.attrs) ?? {};
+  const parts: string[] = [];
+  if (step.duration_ms) parts.push(`${Math.round(step.duration_ms)}ms`);
+  if (step.tokens) parts.push(`tokens ${step.tokens}`);
+  if (step.cost_usd) parts.push(`cost ${step.cost_usd.toFixed(4)}`);
+  const model = attrs.model;
+  if (typeof model === "string" && model) parts.push(model);
+  return parts.join("  |  ");
+}
+
 export default function App() {
   const initialExplorerState = readExplorerUrlState();
   const [theme, setTheme] = useState<ThemeMode>(() => getInitialTheme());
@@ -420,6 +463,8 @@ export default function App() {
   const [logs, setLogs] = useState<Awaited<ReturnType<typeof getLogs>> | null>(null);
   const [traces, setTraces] = useState<TraceResponse | null>(null);
   const [stats, setStats] = useState<StatsSummary | null>(null);
+  const [runs, setRuns] = useState<RunList | null>(null);
+  const [selectedRun, setSelectedRun] = useState<RunDetail | null>(null);
   const [health, setHealth] = useState<Awaited<ReturnType<typeof getHealth>> | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<EventRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -431,7 +476,8 @@ export default function App() {
     projects: false,
     logs: false,
     traces: false,
-    stats: false
+    stats: false,
+    runs: false
   });
 
   const currentProjectId = route.page === "project" ? route.projectId : "";
@@ -445,8 +491,9 @@ export default function App() {
   const syncStatus = useMemo(() => {
     if (currentTab === "logs") return logs?.sync ?? null;
     if (currentTab === "traces") return traces?.sync ?? null;
+    if (currentTab === "runs") return runs?.sync ?? null;
     return stats?.sync ?? null;
-  }, [currentTab, logs?.sync, traces?.sync, stats?.sync]);
+  }, [currentTab, logs?.sync, traces?.sync, runs?.sync, stats?.sync]);
 
   const currentWarnings = useMemo<ResultWarning[]>(() => {
     if (currentTab === "logs") return logs?.warnings ?? [];
@@ -457,8 +504,9 @@ export default function App() {
   const currentTotal = useMemo(() => {
     if (currentTab === "logs") return logs?.total ?? 0;
     if (currentTab === "traces") return traces?.total ?? 0;
+    if (currentTab === "runs") return runs?.total ?? 0;
     return stats?.total_events ?? 0;
-  }, [currentTab, logs?.total, traces?.total, stats?.total_events]);
+  }, [currentTab, logs?.total, traces?.total, runs?.total, stats?.total_events]);
 
   const retentionStatus = health?.retention ?? null;
   const healthSyncStatus = health?.sync ?? null;
@@ -682,7 +730,64 @@ export default function App() {
     if (tab === "traces") {
       return loadTraces(projectId, filters);
     }
+    if (tab === "runs") {
+      return loadRuns(projectId, filters);
+    }
     return loadStats(projectId, filters);
+  }
+
+  async function loadRuns(projectId = currentProjectId, filters = logFilters) {
+    if (!projectId) return;
+    setLoading((current) => ({ ...current, runs: true }));
+    try {
+      const response = await getRuns({
+        project_id: projectId,
+        from: filters.from,
+        to: filters.to,
+        page: filters.page,
+        limit: filters.limit
+      });
+      setRuns(response);
+      setError(null);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Failed to load runs");
+    } finally {
+      setLoading((current) => ({ ...current, runs: false }));
+    }
+  }
+
+  async function openRun(runId: string) {
+    try {
+      const detail = await getRun(runId);
+      setSelectedRun(detail);
+      setError(null);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Failed to load run");
+    }
+  }
+
+  function openRunFromTrace(targetRunId: string) {
+    if (route.page !== "project") return;
+    const nextRoute: RouteState = { page: "project", projectId: route.projectId, tab: "runs" };
+    setRoute(nextRoute);
+    navigate(nextRoute);
+    setLogFilters((current) => ({ ...current, page: "1" }));
+    void openRun(targetRunId);
+  }
+
+  function openTraceFromRun(traceId: string) {
+    if (route.page !== "project") return;
+    const nextFilters: LogFilterState = {
+      ...logFilters,
+      query: `trace_id = "${traceId}"`,
+      page: "1"
+    };
+    const nextRoute: RouteState = { page: "project", projectId: route.projectId, tab: "logs" };
+    setRoute(nextRoute);
+    navigate(nextRoute);
+    setQueryText(nextFilters.query);
+    setLogFilters(nextFilters);
+    void loadLogs(route.projectId, nextFilters);
   }
 
   useEffect(() => {
@@ -712,6 +817,10 @@ export default function App() {
     }
     if (tab === "traces") {
       void loadTraces(projectId, nextFilters);
+      return;
+    }
+    if (tab === "runs") {
+      void loadRuns(projectId, nextFilters);
       return;
     }
     void loadStats(projectId, nextFilters);
@@ -889,6 +998,10 @@ export default function App() {
       void loadTraces(route.projectId, nextFilters);
       return;
     }
+    if (route.tab === "runs") {
+      void loadRuns(route.projectId, nextFilters);
+      return;
+    }
     void loadStats(route.projectId, nextFilters);
   }
 
@@ -906,6 +1019,10 @@ export default function App() {
       }
       if (route.tab === "traces") {
         void loadTraces(route.projectId, nextFilters);
+        return;
+      }
+      if (route.tab === "runs") {
+        void loadRuns(route.projectId, nextFilters);
         return;
       }
       void loadStats(route.projectId, nextFilters);
@@ -1018,6 +1135,23 @@ export default function App() {
         return;
       }
 
+      if (route.tab === "runs") {
+        const response = await getRuns({
+          project_id: route.projectId,
+          from: exportFilters.from,
+          to: exportFilters.to,
+          page: "1",
+          limit: exportFilters.limit
+        });
+        downloadBlob(
+          `${currentProject?.name ?? "project"}-runs-${timestamp}.json`,
+          JSON.stringify(response.runs, null, 2),
+          "application/json"
+        );
+        setNotice(`Exported ${response.runs.length} agent runs.`);
+        return;
+      }
+
       const response = await getStats({
         project_id: route.projectId,
         from: exportFilters.from,
@@ -1049,6 +1183,10 @@ export default function App() {
       void loadTraces(route.projectId, logFilters);
       return;
     }
+    if (route.tab === "runs") {
+      void loadRuns(route.projectId, logFilters);
+      return;
+    }
     void loadStats(route.projectId, logFilters);
   }
 
@@ -1065,6 +1203,11 @@ export default function App() {
     }
     if (route.tab === "traces") {
       void loadTraces(route.projectId, nextFilters);
+      return;
+    }
+    if (route.tab === "runs") {
+      void loadRuns(route.projectId, nextFilters);
+      return;
     }
   }
 
@@ -1154,6 +1297,8 @@ export default function App() {
                 <option value="log">log</option>
                 <option value="trace">trace</option>
                 <option value="metric">metric</option>
+                <option value="run">run</option>
+                <option value="run_step">run_step</option>
               </select>
             </label>
             <label className="field-block">
@@ -1421,7 +1566,7 @@ export default function App() {
               </div>
 
               <nav className="tab-strip">
-                {(["logs", "traces", "stats"] as Tab[]).map((tab) => (
+                {(["logs", "traces", "stats", "runs"] as Tab[]).map((tab) => (
                   <button
                     key={tab}
                     className={`tab-button ${currentTab === tab ? "active" : ""}`}
@@ -1430,7 +1575,13 @@ export default function App() {
                   >
                     <span>{tab}</span>
                     <strong>
-                      {tab === "logs" ? logs?.total ?? 0 : tab === "traces" ? traces?.total ?? 0 : stats?.total_events ?? 0}
+                      {tab === "logs"
+                        ? logs?.total ?? 0
+                        : tab === "traces"
+                          ? traces?.total ?? 0
+                          : tab === "runs"
+                            ? runs?.total ?? 0
+                            : stats?.total_events ?? 0}
                     </strong>
                   </button>
                 ))}
@@ -1668,8 +1819,13 @@ export default function App() {
                           <div key={event.event_id} className="trace-row">
                             <span>{formatTime(event.ts)}</span>
                             <strong>{event.name}</strong>
-                            <span>{event.source}</span>
+                            <span>{event.kind || "event"}</span>
                             <span>{event.level || "info"}</span>
+                            {event.run_id ? (
+                              <button className="secondary" onClick={() => openRunFromTrace(event.run_id ?? "")}>
+                                Open run
+                              </button>
+                            ) : null}
                           </div>
                         ))}
                       </div>
@@ -1696,6 +1852,165 @@ export default function App() {
                     Next
                   </button>
                 </div>
+              </section>
+            ) : null}
+
+            {currentTab === "runs" ? (
+              <section className="logs-layout">
+                <section className="surface table-surface">
+                  <div className="table-shell">
+                    {loading.runs ? <p className="muted table-state">Loading runs...</p> : null}
+                    {!runs?.runs.length && !loading.runs ? (
+                      <p className="muted table-state">
+                        No agent runs yet. Install the Pi producer and run an agent session.
+                      </p>
+                    ) : null}
+                    {runs?.runs.length ? (
+                      <table className="data-table log-table">
+                        <thead>
+                          <tr>
+                            <th>Started</th>
+                            <th>Status</th>
+                            <th>Run</th>
+                            <th>Branch</th>
+                            <th>Steps</th>
+                            <th>Tokens</th>
+                            <th>Cost</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {runs.runs.map((run) => (
+                            <tr
+                              key={run.run_id}
+                              className={selectedRun?.run.run_id === run.run_id ? "selected" : ""}
+                              onClick={() => void openRun(run.run_id)}
+                            >
+                              <td>{formatTime(run.started_at)}</td>
+                              <td>
+                                <span className={`tone-badge tone-${runStatusTone(run.status)}`}>{run.status}</span>
+                              </td>
+                              <td>
+                                <div className="table-primary">
+                                  <strong>{run.name || run.run_id}</strong>
+                                  <span>
+                                    {run.source}
+                                    {run.model ? ` | ${run.model}` : ""}
+                                    {run.error_count ? ` | ${run.error_count} errors` : ""}
+                                  </span>
+                                </div>
+                              </td>
+                              <td>{run.branch || "n/a"}</td>
+                              <td>{run.step_count}</td>
+                              <td>{run.total_tokens}</td>
+                              <td>{run.total_cost_usd ? run.total_cost_usd.toFixed(4) : "0"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    ) : null}
+                  </div>
+
+                  <div className="pagination">
+                    <button
+                      className="secondary"
+                      disabled={!runs || runs.page <= 1}
+                      onClick={() => handleTablePage((runs?.page ?? 1) - 1)}
+                    >
+                      Previous
+                    </button>
+                    <span>
+                      Page {runs?.page ?? 1} / {runs ? Math.max(1, Math.ceil(runs.total / runs.limit)) : 1}
+                    </span>
+                    <button
+                      className="secondary"
+                      disabled={!runs || runs.page * runs.limit >= runs.total}
+                      onClick={() => handleTablePage((runs?.page ?? 1) + 1)}
+                    >
+                      Next
+                    </button>
+                  </div>
+                </section>
+
+                <aside className="surface detail-surface">
+                  <div className="surface-heading">
+                    <div>
+                      <p className="eyebrow">Run Replay</p>
+                      <strong>{selectedRun?.run.name ?? "No run selected"}</strong>
+                    </div>
+                    {selectedRun ? <span className="muted">{selectedRun.run.run_id}</span> : null}
+                  </div>
+
+                  {selectedRun ? (
+                    <div className="event-detail">
+                      <div className="detail-grid">
+                        <div className="meta-tile">
+                          <span>Status</span>
+                          <strong>{selectedRun.run.status}</strong>
+                        </div>
+                        <div className="meta-tile">
+                          <span>Source</span>
+                          <strong>{selectedRun.run.source}</strong>
+                        </div>
+                        <div className="meta-tile">
+                          <span>Model</span>
+                          <strong>{selectedRun.run.model || "n/a"}</strong>
+                        </div>
+                        <div className="meta-tile">
+                          <span>Steps</span>
+                          <strong>{selectedRun.run.step_count}</strong>
+                        </div>
+                        <div className="meta-tile">
+                          <span>Tokens</span>
+                          <strong>{selectedRun.run.total_tokens}</strong>
+                        </div>
+                        <div className="meta-tile">
+                          <span>Cost</span>
+                          <strong>{selectedRun.run.total_cost_usd.toFixed(4)}</strong>
+                        </div>
+                      </div>
+
+                      {selectedRun.run.prompt_summary ? (
+                        <div className="detail-block">
+                          <span className="drawer-label">Prompt</span>
+                          <p className="detail-message">{selectedRun.run.prompt_summary}</p>
+                        </div>
+                      ) : null}
+
+                      <div className="detail-block">
+                        <span className="drawer-label">Timeline</span>
+                        <div className="trace-events">
+                          {selectedRun.steps.map((step) => (
+                            <div key={step.step_id} className="trace-row">
+                              <span>{formatTime(step.ts)}</span>
+                              <strong>{step.step_type}</strong>
+                              <span>{step.name}</span>
+                              <span>{step.status || "info"}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {selectedRun.steps.map((step) => (
+                        <div key={`${step.step_id}-detail`} className="detail-block">
+                          <span className="drawer-label">
+                            {step.step_type} | {step.name}
+                          </span>
+                          {step.trace_id ? (
+                            <button className="secondary" onClick={() => openTraceFromRun(step.trace_id ?? "")}>
+                              Open trace
+                            </button>
+                          ) : null}
+                          {stepTokens(step) ? <p className="muted">{stepTokens(step)}</p> : null}
+                          {stepThinking(step) ? <pre className="code-block">{stepThinking(step)}</pre> : null}
+                          {stepText(step) ? <pre className="code-block">{stepText(step)}</pre> : null}
+                          {stepArgs(step) ? <pre className="code-block">{stepArgs(step)}</pre> : null}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="muted">Select a run to replay its steps, decisions, and tool calls.</p>
+                  )}
+                </aside>
               </section>
             ) : null}
 

@@ -15,7 +15,10 @@ Vigil already has:
 - raw append-only NDJSON storage as the source of truth
 - SQLite read models for logs, traces, stats, and simple URL-filtered search
 - async indexing with rebuild from raw storage
-- log, trace, and metric event envelope
+- log, trace, metric, run, and run_step event envelope
+- agent run model with ordered run steps, replay, and token/cost/status summaries
+- Pi agent-trace producer, plus Python and TypeScript `agent_run` SDK helpers
+- trace/span correlation so a run and its steps join app traces in one project
 - retention sweep with read-model rebuild
 - Python SDK
 - install script and GitHub release workflow

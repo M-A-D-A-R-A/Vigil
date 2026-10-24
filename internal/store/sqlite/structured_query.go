@@ -160,6 +160,10 @@ func coreColumn(field query.Field) (column string, isTimestamp bool, err error) 
 		return "e.trace_id", false, nil
 	case "span_id":
 		return "e.span_id", false, nil
+	case "run_id":
+		return "e.run_id", false, nil
+	case "step_type":
+		return "e.step_type", false, nil
 	case "timestamp", "ts":
 		return "e.ts", true, nil
 	default:
@@ -167,7 +171,7 @@ func coreColumn(field query.Field) (column string, isTimestamp bool, err error) 
 			Message:    fmt.Sprintf("unknown field %q", field.Raw),
 			Start:      field.Start,
 			End:        field.End,
-			Suggestion: "Use kind, level, source, name, trace_id, span_id, timestamp, attrs.foo, or body.foo.",
+			Suggestion: "Use kind, level, source, name, trace_id, span_id, run_id, step_type, timestamp, attrs.foo, or body.foo.",
 		}
 	}
 }

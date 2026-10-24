@@ -267,3 +267,33 @@ test("browser capture sends safe page and fetch summaries", async () => {
   assert.equal(fetchEvent.attrs.status, 503);
   assert.equal(fetchEvent.attrs.duration_ms >= 0, true);
 });
+
+test("agentRun emits correlated run steps", async () => {
+  const transport = fakeTransport();
+  const client = new VigilClient({
+    baseUrl: "http://vigil.local",
+    projectId: "proj_1",
+    ingestKey: "vigil_x",
+    transport,
+  });
+
+  const run = await client.agentRun("support-agent", { runId: "run_1", traceId: "trace_1", prompt: "help" });
+  await run.decision({ thought: "think", model: "gpt-4o", tokens: 120, costUsd: 0.003 });
+  await run.toolCall("search", { q: "x" });
+  await run.toolResult("search", { status: "success", durationMs: 12 });
+  await run.finish();
+
+  assert.equal(run.runId, "run_1");
+  const bodies = transport.calls.map((call) => JSON.parse(call.body));
+  assert.equal(bodies[0].kind, "run");
+  assert.equal(bodies[0].name, "support-agent");
+  assert.equal(bodies[0].attrs.status, "running");
+
+  const steps = bodies.filter((body) => body.kind === "run_step");
+  assert.deepEqual(steps.map((step) => step.step_type), ["decision", "tool_call", "tool_result"]);
+  for (const step of steps) {
+    assert.equal(step.run_id, "run_1");
+    assert.equal(step.trace_id, "trace_1");
+  }
+  assert.equal(bodies.at(-1).attrs.status, "succeeded");
+});

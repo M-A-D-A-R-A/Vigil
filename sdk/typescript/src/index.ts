@@ -66,6 +66,8 @@ export interface IngestOptions {
   level?: string | undefined;
   traceId?: string | undefined;
   spanId?: string | undefined;
+  runId?: string | undefined;
+  stepType?: string | undefined;
 }
 
 export interface LogOptions {
@@ -304,6 +306,8 @@ export class VigilClient {
     setIfPresent(envelope, "level", options.level);
     setIfPresent(envelope, "trace_id", options.traceId);
     setIfPresent(envelope, "span_id", options.spanId);
+    setIfPresent(envelope, "run_id", options.runId);
+    setIfPresent(envelope, "step_type", options.stepType);
 
     const payload = await this.request("POST", "/api/ingest", {
       headers: { Authorization: `Bearer ${this.ingestKey}` },
@@ -354,6 +358,22 @@ export class VigilClient {
       ts: options.ts,
       source: options.source,
     });
+  }
+
+  async agentRun(name: string, options: AgentRunOptions = {}): Promise<AgentRun> {
+    const runId = clean(options.runId) || `run_${randomId()}`;
+    const attrs: JsonObject = { ...(options.attrs ?? {}), status: "running" };
+    if (options.prompt) attrs["prompt"] = options.prompt;
+    await this.ingest({
+      kind: "run",
+      name,
+      runId,
+      traceId: options.traceId,
+      spanId: options.spanId,
+      source: options.source,
+      attrs,
+    });
+    return new AgentRun(this, runId, clean(options.traceId) || undefined, clean(options.spanId) || undefined);
   }
 
   async logs(params: QueryParams = {}): Promise<Record<string, unknown>> {
@@ -415,6 +435,135 @@ export class VigilClient {
     if (missing.length > 0) {
       throw new VigilConfigError(`missing required ingest configuration: ${missing.join(", ")}`);
     }
+  }
+}
+
+export interface AgentRunOptions {
+  runId?: string | undefined;
+  traceId?: string | undefined;
+  spanId?: string | undefined;
+  source?: string | undefined;
+  prompt?: string | undefined;
+  attrs?: JsonObject | undefined;
+}
+
+export interface AgentRunDecisionOptions {
+  thought?: string | undefined;
+  text?: string | undefined;
+  model?: string | undefined;
+  tokens?: number | undefined;
+  costUsd?: number | undefined;
+  spanId?: string | undefined;
+  attrs?: JsonObject | undefined;
+}
+
+export interface AgentRunToolResultOptions {
+  status?: string | undefined;
+  durationMs?: number | undefined;
+  tokens?: number | undefined;
+  costUsd?: number | undefined;
+  error?: string | undefined;
+  output?: string | undefined;
+  spanId?: string | undefined;
+  attrs?: JsonObject | undefined;
+}
+
+/** A single agent invocation that emits ordered run steps to Vigil. */
+export class AgentRun {
+  private finished = false;
+
+  constructor(
+    private readonly client: VigilClient,
+    readonly runId: string,
+    readonly traceId?: string | undefined,
+    readonly spanId?: string | undefined,
+  ) {}
+
+  private emit(options: IngestOptions): Promise<IngestResult> {
+    return this.client.ingest(options);
+  }
+
+  async decision(options: AgentRunDecisionOptions = {}): Promise<void> {
+    const attrs: JsonObject = { ...(options.attrs ?? {}) };
+    if (options.model) attrs["model"] = options.model;
+    if (options.tokens !== undefined) attrs["total_tokens"] = options.tokens;
+    if (options.costUsd !== undefined) attrs["cost_usd"] = options.costUsd;
+    const body: JsonObject = {};
+    if (options.thought) body["thinking"] = options.thought;
+    if (options.text) body["text"] = options.text;
+    await this.emit({
+      kind: "run_step",
+      name: "assistant.decision",
+      stepType: "decision",
+      runId: this.runId,
+      traceId: this.traceId,
+      spanId: options.spanId ?? this.spanId,
+      attrs,
+      body: Object.keys(body).length > 0 ? body : undefined,
+    });
+  }
+
+  async toolCall(
+    name: string,
+    args?: JsonObject | undefined,
+    options: { spanId?: string | undefined; attrs?: JsonObject | undefined } = {},
+  ): Promise<void> {
+    await this.emit({
+      kind: "run_step",
+      name,
+      stepType: "tool_call",
+      runId: this.runId,
+      traceId: this.traceId,
+      spanId: options.spanId ?? this.spanId,
+      attrs: { ...(options.attrs ?? {}) },
+      body: args === undefined ? undefined : { args },
+    });
+  }
+
+  async toolResult(name: string, options: AgentRunToolResultOptions = {}): Promise<void> {
+    const attrs: JsonObject = { ...(options.attrs ?? {}), status: options.status ?? "success" };
+    if (options.durationMs !== undefined) attrs["duration_ms"] = options.durationMs;
+    if (options.tokens !== undefined) attrs["total_tokens"] = options.tokens;
+    if (options.costUsd !== undefined) attrs["cost_usd"] = options.costUsd;
+    if (options.error) attrs["error"] = options.error;
+    await this.emit({
+      kind: "run_step",
+      name,
+      stepType: "tool_result",
+      runId: this.runId,
+      traceId: this.traceId,
+      spanId: options.spanId ?? this.spanId,
+      attrs,
+      body: options.output === undefined ? undefined : { message: options.output },
+      level: (options.status ?? "success") === "error" ? "error" : undefined,
+    });
+  }
+
+  async step(
+    stepType: string,
+    name: string,
+    options: { attrs?: JsonObject | undefined; body?: JsonValue | undefined; spanId?: string | undefined; level?: string | undefined } = {},
+  ): Promise<void> {
+    await this.emit({
+      kind: "run_step",
+      name,
+      stepType,
+      runId: this.runId,
+      traceId: this.traceId,
+      spanId: options.spanId ?? this.spanId,
+      attrs: { ...(options.attrs ?? {}) },
+      body: options.body,
+      level: options.level,
+    });
+  }
+
+  async finish(options: { status?: string | undefined; outcome?: string | undefined; failureClass?: string | undefined } = {}): Promise<void> {
+    if (this.finished) return;
+    this.finished = true;
+    const attrs: JsonObject = { status: options.status ?? "succeeded" };
+    if (options.outcome) attrs["outcome"] = options.outcome;
+    if (options.failureClass) attrs["failure_class"] = options.failureClass;
+    await this.emit({ kind: "run", name: "run.completed", runId: this.runId, traceId: this.traceId, attrs });
   }
 }
 
@@ -802,6 +951,12 @@ function required(name: string, value: unknown): string {
 
 function clean(value: unknown): string {
   return value === undefined || value === null ? "" : String(value).trim();
+}
+
+function randomId(): string {
+  const candidate = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
+  if (candidate?.randomUUID) return candidate.randomUUID().replace(/-/g, "");
+  return `${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
 }
 
 function setIfPresent(target: Record<string, JsonValue | undefined>, key: string, value: unknown): void {

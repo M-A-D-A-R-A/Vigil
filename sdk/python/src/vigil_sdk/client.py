@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 import os
-from typing import Any, Callable, Mapping, Optional, Union
+import uuid
+from typing import Any, Callable, Iterator, Mapping, Optional, Union
 from urllib.error import HTTPError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
@@ -154,6 +156,8 @@ class VigilClient:
         level: Optional[str] = None,
         trace_id: Optional[str] = None,
         span_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        step_type: Optional[str] = None,
     ) -> IngestResult:
         self._require_ingest_config()
 
@@ -170,6 +174,8 @@ class VigilClient:
         _set_if_present(envelope, "level", level)
         _set_if_present(envelope, "trace_id", trace_id)
         _set_if_present(envelope, "span_id", span_id)
+        _set_if_present(envelope, "run_id", run_id)
+        _set_if_present(envelope, "step_type", step_type)
 
         payload = self._request(
             "POST",
@@ -249,6 +255,53 @@ class VigilClient:
             ts=ts,
             source=source,
         )
+
+    @contextmanager
+    def agent_run(
+        self,
+        name: str,
+        *,
+        run_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        span_id: Optional[str] = None,
+        source: Optional[str] = None,
+        prompt: Optional[str] = None,
+        attrs: Optional[Mapping[str, Any]] = None,
+    ) -> Iterator["AgentRun"]:
+        """Create an agent run, yielding an :class:`AgentRun` for decisions and tool calls.
+
+        Pass ``trace_id`` / ``span_id`` to correlate the run and its steps with
+        app traces and logs in the same project.
+        """
+        from .agent import AgentRun
+
+        resolved_run_id = _clean(run_id) or f"run_{uuid.uuid4().hex}"
+        started_attrs = dict(attrs or {})
+        started_attrs["status"] = "running"
+        if prompt:
+            started_attrs["prompt"] = prompt
+        self.ingest(
+            kind="run",
+            name=name,
+            run_id=resolved_run_id,
+            trace_id=trace_id,
+            span_id=span_id,
+            attrs=started_attrs,
+            source=source,
+        )
+        run = AgentRun(
+            client=self,
+            run_id=resolved_run_id,
+            trace_id=_clean(trace_id) or None,
+            span_id=_clean(span_id) or None,
+        )
+        try:
+            yield run
+        except Exception as exc:
+            run.finish(status="failed", failure_class=type(exc).__name__, outcome=str(exc)[:200])
+            raise
+        else:
+            run.finish(status="succeeded")
 
     def logs(self, **params: Any) -> dict[str, Any]:
         return self._query("/api/logs", params)

@@ -145,6 +145,8 @@ Body:
 }
 ```
 
+Native ingest also accepts agent run events with `kind=run` and `kind=run_step`, plus `run_id` and `step_type` fields. See [Agent Traces](agent-traces.md) for the run and step contract.
+
 ### Browser JSON Ingest
 
 `POST /api/browser/ingest`
@@ -268,7 +270,7 @@ name ~= "checkout"
 trace_id = "trace_123"
 ```
 
-Supported structured fields are `kind`, `level`, `source`, `name`, `trace_id`, `span_id`, `timestamp` / `ts`, plus one-level JSON fields such as `attrs.route` and `body.message`.
+Supported structured fields are `kind`, `level`, `source`, `name`, `trace_id`, `span_id`, `run_id`, `step_type`, `timestamp` / `ts`, plus one-level JSON fields such as `attrs.route` and `body.message`.
 
 Responses can include:
 
@@ -301,3 +303,15 @@ Returns grouped trace timelines by `trace_id`, with the same `warnings[]` behavi
 `GET /api/stats`
 
 Returns lightweight summaries built from indexed events.
+
+`GET /api/runs`
+
+Returns agent run summaries for the requested window.
+
+Supported query params: `project_id`, `from`, `to`, `page`, `limit`.
+
+`GET /api/runs/{run_id}`
+
+Returns one run summary plus its ordered steps. Each step includes `step_type`, `status`, `duration_ms`, `tokens`, `cost_usd`, `trace_id`, `span_id`, `attrs`, and `body`.
+
+See [Agent Traces](agent-traces.md) for the run and step model.
