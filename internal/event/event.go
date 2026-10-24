@@ -34,6 +34,7 @@ type Envelope struct {
 	Source        string          `json:"source"`
 	TraceID       string          `json:"trace_id,omitempty"`
 	SpanID        string          `json:"span_id,omitempty"`
+	ParentSpanID  string          `json:"parent_span_id,omitempty"`
 	RunID         string          `json:"run_id,omitempty"`
 	StepType      string          `json:"step_type,omitempty"`
 	Level         string          `json:"level,omitempty"`
@@ -96,6 +97,7 @@ func NormalizeEnvelope(env Envelope, projectID string, now time.Time) (*StoredEv
 			Source:        strings.TrimSpace(env.Source),
 			TraceID:       strings.TrimSpace(env.TraceID),
 			SpanID:        strings.TrimSpace(env.SpanID),
+			ParentSpanID:  strings.TrimSpace(env.ParentSpanID),
 			RunID:         strings.TrimSpace(env.RunID),
 			StepType:      strings.ToLower(strings.TrimSpace(env.StepType)),
 			Level:         strings.ToLower(strings.TrimSpace(env.Level)),

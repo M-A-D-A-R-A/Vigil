@@ -69,17 +69,18 @@ type LogList struct {
 }
 
 type TraceEvent struct {
-	EventID  string          `json:"event_id"`
-	TS       string          `json:"ts"`
-	Name     string          `json:"name"`
-	Level    string          `json:"level,omitempty"`
-	Source   string          `json:"source"`
-	SpanID   string          `json:"span_id,omitempty"`
-	Kind     string          `json:"kind,omitempty"`
-	RunID    string          `json:"run_id,omitempty"`
-	StepType string          `json:"step_type,omitempty"`
-	Attrs    json.RawMessage `json:"attrs"`
-	Body     json.RawMessage `json:"body"`
+	EventID      string          `json:"event_id"`
+	TS           string          `json:"ts"`
+	Name         string          `json:"name"`
+	Level        string          `json:"level,omitempty"`
+	Source       string          `json:"source"`
+	SpanID       string          `json:"span_id,omitempty"`
+	ParentSpanID string          `json:"parent_span_id,omitempty"`
+	Kind         string          `json:"kind,omitempty"`
+	RunID        string          `json:"run_id,omitempty"`
+	StepType     string          `json:"step_type,omitempty"`
+	Attrs        json.RawMessage `json:"attrs"`
+	Body         json.RawMessage `json:"body"`
 }
 
 type TraceTimeline struct {
@@ -186,6 +187,7 @@ func (s *Store) init(ctx context.Context) error {
 			source TEXT NOT NULL,
 			trace_id TEXT NOT NULL DEFAULT '',
 			span_id TEXT NOT NULL DEFAULT '',
+			parent_span_id TEXT NOT NULL DEFAULT '',
 			run_id TEXT NOT NULL DEFAULT '',
 			step_type TEXT NOT NULL DEFAULT '',
 			level TEXT NOT NULL DEFAULT '',
@@ -195,6 +197,7 @@ func (s *Store) init(ctx context.Context) error {
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_events_project_ts ON events(project_id, ts DESC);`,
 		`CREATE INDEX IF NOT EXISTS idx_events_trace_ts ON events(trace_id, ts ASC);`,
+		`CREATE INDEX IF NOT EXISTS idx_events_parent_span ON events(parent_span_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_events_kind_ts ON events(kind, ts DESC);`,
 		`CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
 			event_id UNINDEXED,
@@ -278,6 +281,10 @@ func (s *Store) init(ctx context.Context) error {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
 			return fmt.Errorf("init sqlite schema: %w", err)
 		}
+	}
+
+	if err := s.ensureColumn(ctx, "events", "parent_span_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return fmt.Errorf("migrate events parent_span_id: %w", err)
 	}
 
 	if _, err := s.KeyHashSeed(); err != nil {
@@ -695,8 +702,8 @@ func (s *Store) UpsertEvents(events []*event.StoredEvent) (int, string, error) {
 
 	insertEvent, err := tx.Prepare(
 		`INSERT OR IGNORE INTO events(
-			event_id, schema_version, project_id, kind, ts, received_at, source, trace_id, span_id, run_id, step_type, level, name, attrs_json, body_json
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			event_id, schema_version, project_id, kind, ts, received_at, source, trace_id, span_id, parent_span_id, run_id, step_type, level, name, attrs_json, body_json
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	)
 	if err != nil {
 		return 0, "", fmt.Errorf("prepare insert event: %w", err)
@@ -761,6 +768,7 @@ func (s *Store) UpsertEvents(events []*event.StoredEvent) (int, string, error) {
 			ev.Source,
 			ev.TraceID,
 			ev.SpanID,
+			ev.ParentSpanID,
 			ev.RunID,
 			ev.StepType,
 			ev.Level,
@@ -979,7 +987,7 @@ func (s *Store) ListLogs(filters query.LogFilters) (*LogList, error) {
 	offset := (filters.Page - 1) * filters.Limit
 	listArgs := append(append([]any{}, args...), filters.Limit, offset)
 	listQuery := fmt.Sprintf(
-		`SELECT e.event_id, e.received_at, e.schema_version, e.project_id, e.kind, e.ts, e.source, e.trace_id, e.span_id, e.run_id, e.step_type, e.level, e.name, e.attrs_json, e.body_json
+		`SELECT e.event_id, e.received_at, e.schema_version, e.project_id, e.kind, e.ts, e.source, e.trace_id, e.span_id, e.parent_span_id, e.run_id, e.step_type, e.level, e.name, e.attrs_json, e.body_json
 		 FROM events e %s
 		 WHERE %s
 		 ORDER BY e.ts DESC, e.received_at DESC
@@ -1008,6 +1016,7 @@ func (s *Store) ListLogs(filters query.LogFilters) (*LogList, error) {
 			&ev.Source,
 			&ev.TraceID,
 			&ev.SpanID,
+			&ev.ParentSpanID,
 			&ev.RunID,
 			&ev.StepType,
 			&ev.Level,
@@ -1073,7 +1082,7 @@ func (s *Store) ListLogsAfter(filters query.LogFilters, afterEventID string, lim
 	clause := strings.Join(where, " AND ")
 	rows, err := s.db.Query(
 		fmt.Sprintf(
-			`SELECT e.event_id, e.received_at, e.schema_version, e.project_id, e.kind, e.ts, e.source, e.trace_id, e.span_id, e.run_id, e.step_type, e.level, e.name, e.attrs_json, e.body_json
+			`SELECT e.event_id, e.received_at, e.schema_version, e.project_id, e.kind, e.ts, e.source, e.trace_id, e.span_id, e.parent_span_id, e.run_id, e.step_type, e.level, e.name, e.attrs_json, e.body_json
 			 FROM events e %s
 			 WHERE %s
 			 ORDER BY e.ts ASC, e.received_at ASC
@@ -1128,6 +1137,7 @@ func scanStoredEvent(scanner storedEventScanner) (event.StoredEvent, error) {
 		&ev.Source,
 		&ev.TraceID,
 		&ev.SpanID,
+		&ev.ParentSpanID,
 		&ev.RunID,
 		&ev.StepType,
 		&ev.Level,
@@ -1163,6 +1173,18 @@ func logQueryParts(filters query.LogFilters) (string, []string, []any, error) {
 	if filters.Name != "" {
 		where = append(where, "e.name = ?")
 		args = append(args, filters.Name)
+	}
+	if filters.TraceID != "" {
+		where = append(where, "e.trace_id = ?")
+		args = append(args, filters.TraceID)
+	}
+	if filters.SpanID != "" {
+		where = append(where, "e.span_id = ?")
+		args = append(args, filters.SpanID)
+	}
+	if filters.ParentSpanID != "" {
+		where = append(where, "e.parent_span_id = ?")
+		args = append(args, filters.ParentSpanID)
 	}
 	if filters.Query != "" {
 		join = "JOIN events_fts f ON f.event_id = e.event_id"
@@ -1221,7 +1243,7 @@ func (s *Store) ListTraces(filters query.RangeFilters) (*TraceList, error) {
 
 	for i := range traces {
 		eventRows, err := s.db.Query(
-			`SELECT event_id, ts, name, level, source, span_id, kind, run_id, step_type, attrs_json, body_json
+			`SELECT event_id, ts, name, level, source, span_id, parent_span_id, kind, run_id, step_type, attrs_json, body_json
 			 FROM events
 			 WHERE trace_id = ?
 			 ORDER BY ts ASC, received_at ASC`,
@@ -1234,7 +1256,7 @@ func (s *Store) ListTraces(filters query.RangeFilters) (*TraceList, error) {
 		for eventRows.Next() {
 			var traceEvent TraceEvent
 			var attrs, body string
-			if err := eventRows.Scan(&traceEvent.EventID, &traceEvent.TS, &traceEvent.Name, &traceEvent.Level, &traceEvent.Source, &traceEvent.SpanID, &traceEvent.Kind, &traceEvent.RunID, &traceEvent.StepType, &attrs, &body); err != nil {
+			if err := eventRows.Scan(&traceEvent.EventID, &traceEvent.TS, &traceEvent.Name, &traceEvent.Level, &traceEvent.Source, &traceEvent.SpanID, &traceEvent.ParentSpanID, &traceEvent.Kind, &traceEvent.RunID, &traceEvent.StepType, &attrs, &body); err != nil {
 				eventRows.Close()
 				return nil, err
 			}

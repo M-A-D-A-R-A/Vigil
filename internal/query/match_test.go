@@ -75,3 +75,41 @@ func TestMatchLogEventRejectsNonLogEvents(t *testing.T) {
 		t.Fatal("did not expect trace event to match log tail filters")
 	}
 }
+
+func TestMatchLogEventTraceContextFilters(t *testing.T) {
+	now := time.Now().UTC()
+	filters := LogFilters{
+		RangeFilters: RangeFilters{
+			From: now.Add(-time.Hour),
+			To:   now.Add(time.Hour),
+		},
+		TraceID:      "trace_1",
+		SpanID:       "span_child",
+		ParentSpanID: "span_root",
+	}
+	ev := &event.StoredEvent{
+		EventID:    "evt_log",
+		ReceivedAt: now.Format(time.RFC3339Nano),
+		Envelope: event.Envelope{
+			SchemaVersion: event.SchemaVersion,
+			ProjectID:     "proj_1",
+			Kind:          event.KindLog,
+			TS:            now.Format(time.RFC3339Nano),
+			Source:        "api",
+			TraceID:       "trace_1",
+			SpanID:        "span_child",
+			ParentSpanID:  "span_root",
+			Level:         "info",
+			Name:          "request.completed",
+			Attrs:         []byte(`{}`),
+			Body:          []byte(`null`),
+		},
+	}
+	if !MatchLogEvent(filters, ev) {
+		t.Fatal("expected event to match trace context filters")
+	}
+	ev.ParentSpanID = "other_parent"
+	if MatchLogEvent(filters, ev) {
+		t.Fatal("did not expect event to match after parent span changed")
+	}
+}

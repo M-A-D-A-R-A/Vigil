@@ -31,6 +31,9 @@ type LogFilters struct {
 	Kind            string
 	Level           string
 	Name            string
+	TraceID         string
+	SpanID          string
+	ParentSpanID    string
 	Query           string
 	StructuredQuery string
 	Structured      *StructuredQuery
@@ -51,6 +54,9 @@ func ParseLogFilters(values url.Values, now time.Time) (LogFilters, error) {
 		Kind:            strings.ToLower(strings.TrimSpace(values.Get("kind"))),
 		Level:           strings.ToLower(strings.TrimSpace(values.Get("level"))),
 		Name:            strings.TrimSpace(values.Get("name")),
+		TraceID:         strings.TrimSpace(values.Get("trace_id")),
+		SpanID:          strings.TrimSpace(values.Get("span_id")),
+		ParentSpanID:    strings.TrimSpace(values.Get("parent_span_id")),
 		Query:           strings.TrimSpace(values.Get("q")),
 		StructuredQuery: structuredRaw,
 		Structured:      structured,

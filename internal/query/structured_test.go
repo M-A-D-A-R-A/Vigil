@@ -13,6 +13,7 @@ func TestParseStructuredQueryExamples(t *testing.T) {
 		`source = "api" && attrs.route = "/login"`,
 		`name ~= "checkout"`,
 		`trace_id = "trace_123"`,
+		`parent_span_id = "span_root"`,
 	}
 
 	for _, raw := range cases {

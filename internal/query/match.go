@@ -28,6 +28,15 @@ func MatchLogEvent(filters LogFilters, ev *event.StoredEvent) bool {
 	if filters.Name != "" && ev.Name != filters.Name {
 		return false
 	}
+	if filters.TraceID != "" && ev.TraceID != filters.TraceID {
+		return false
+	}
+	if filters.SpanID != "" && ev.SpanID != filters.SpanID {
+		return false
+	}
+	if filters.ParentSpanID != "" && ev.ParentSpanID != filters.ParentSpanID {
+		return false
+	}
 	if filters.Query != "" && !matchesTextQuery(filters.Query, ev) {
 		return false
 	}
@@ -46,6 +55,9 @@ func matchesTextQuery(raw string, ev *event.StoredEvent) bool {
 		ev.Name,
 		ev.Source,
 		ev.Level,
+		ev.TraceID,
+		ev.SpanID,
+		ev.ParentSpanID,
 		string(ev.Attrs),
 		string(ev.Body),
 	}, " "))
@@ -105,6 +117,8 @@ func coreFieldValue(ev *event.StoredEvent, field string) (any, bool) {
 		return ev.TraceID, true
 	case "span_id":
 		return ev.SpanID, true
+	case "parent_span_id":
+		return ev.ParentSpanID, true
 	case "timestamp", "ts":
 		parsed, err := time.Parse(time.RFC3339Nano, ev.TS)
 		return parsed, err == nil

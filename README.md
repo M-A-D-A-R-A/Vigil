@@ -144,6 +144,8 @@ await vigil.log("request.completed", {
 
 await vigil.trace("llm.completed", {
   traceId: "trace-123",
+  spanId: "span-1",
+  parentSpanId: "span-root",
   attrs: { total_tokens: 42 },
 });
 
@@ -165,7 +167,35 @@ startVigilBrowserCapture({
 });
 ```
 
-The capture helper records safe summaries for page views, route changes, `console.error`, uncaught errors, unhandled promise rejections, and failed `fetch` calls. It does not capture cookies, local/session storage, auth headers, request bodies, response bodies, password fields, full DOM, screenshots, or HAR files.
+The capture helper records safe summaries for page views, route changes, `console.error`, uncaught errors, unhandled promise rejections, and `fetch` calls. It can attach W3C `traceparent` headers to outgoing `fetch` requests so backend logs can keep the same `trace_id`. It does not capture cookies, local/session storage, auth headers, request bodies, response bodies, password fields, full DOM, screenshots, or HAR files.
+
+## Distributed Trace Context
+
+Use W3C `traceparent` helpers when you want to connect a frontend action to backend logs:
+
+```ts
+import { VigilClient, continueTraceContext, parseTraceparent, traceparentHeaders } from "vigil-observability";
+
+const vigil = VigilClient.fromEnv();
+
+export async function handleRequest(req: Request) {
+  const span = continueTraceContext(parseTraceparent(req.headers.get("traceparent")));
+
+  await vigil.log("api.request.started", {
+    traceId: span.traceId,
+    spanId: span.spanId,
+    parentSpanId: span.parentSpanId,
+    attrs: { route: "/api/checkout" },
+  });
+
+  await fetch("http://worker.local/jobs", {
+    method: "POST",
+    headers: traceparentHeaders(span),
+  });
+}
+```
+
+Query `trace_id = "..."` in logs or traces to see the flow across browser, API, workers, and downstream services. Product-specific fields still belong in `attrs`; Vigil core only needs generic trace context.
 
 ## Browser Ingest Keys
 

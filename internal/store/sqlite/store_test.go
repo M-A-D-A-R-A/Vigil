@@ -87,6 +87,7 @@ func TestUpsertEventsMixedBatchUpdatesReadModels(t *testing.T) {
 	})
 	traceEvent.TraceID = "trace_1"
 	traceEvent.SpanID = "span_1"
+	traceEvent.ParentSpanID = "span_root"
 	traceEvent.Attrs = []byte(`{"total_tokens":9,"cost_usd":0.25}`)
 	metricEvent := testEvent("evt_metric", event.KindMetric, baseTS.Add(2*time.Second), map[string]string{
 		"level":   "warn",
@@ -119,6 +120,9 @@ func TestUpsertEventsMixedBatchUpdatesReadModels(t *testing.T) {
 	}
 	if len(traces.Traces) != 1 || traces.Traces[0].EventCount != 1 || len(traces.Traces[0].Events) != 1 {
 		t.Fatalf("expected one trace with one event, got %+v", traces.Traces)
+	}
+	if traces.Traces[0].Events[0].ParentSpanID != "span_root" {
+		t.Fatalf("expected parent span id in trace event, got %q", traces.Traces[0].Events[0].ParentSpanID)
 	}
 
 	stats, err := store.GetStats(testRangeFilters(baseTS))
@@ -186,6 +190,8 @@ func TestListLogsStructuredQueryCoreAndJSONFields(t *testing.T) {
 	events[1].Source = "api"
 	events[1].Name = "request.failed"
 	events[1].TraceID = "trace_login"
+	events[1].SpanID = "span_child"
+	events[1].ParentSpanID = "span_root"
 	events[1].Attrs = []byte(`{"route":"/login","status":503,"cached":false}`)
 	events[2].Source = "worker"
 	events[2].Name = "job.failed"
@@ -205,6 +211,7 @@ func TestListLogsStructuredQueryCoreAndJSONFields(t *testing.T) {
 		{name: "json bool", query: `attrs.cached = true`, total: 1},
 		{name: "contains", query: `body.message ~= "failed"`, total: 2},
 		{name: "trace id", query: `trace_id = "trace_login"`, total: 1},
+		{name: "parent span id", query: `parent_span_id = "span_root"`, total: 1},
 	}
 
 	for _, tt := range cases {
@@ -217,6 +224,18 @@ func TestListLogsStructuredQueryCoreAndJSONFields(t *testing.T) {
 				t.Fatalf("expected total %d, got %d", tt.total, logs.Total)
 			}
 		})
+	}
+
+	logs, err := store.ListLogs(testLogFilters(baseTS, query.LogFilters{
+		TraceID:      "trace_login",
+		SpanID:       "span_child",
+		ParentSpanID: "span_root",
+	}))
+	if err != nil {
+		t.Fatalf("list logs with trace filters: %v", err)
+	}
+	if logs.Total != 1 || logs.Events[0].ParentSpanID != "span_root" {
+		t.Fatalf("expected one parent span filtered log, got %+v", logs)
 	}
 }
 
