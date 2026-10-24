@@ -112,6 +112,9 @@ export type TraceEvent = {
   source: string;
   span_id?: string;
   parent_span_id?: string;
+  kind?: string;
+  run_id?: string;
+  step_type?: string;
   attrs: Record<string, unknown>;
   body: unknown;
 };
@@ -143,6 +146,57 @@ export type StatsSummary = {
   cost_total: number;
   volume: Array<{ day: string; count: number }>;
   sync: SyncStatus;
+};
+
+export type RunSummary = {
+  run_id: string;
+  project_id: string;
+  source: string;
+  name: string;
+  status: string;
+  repo?: string;
+  branch?: string;
+  worktree?: string;
+  model?: string;
+  trace_id?: string;
+  prompt_summary?: string;
+  failure_class?: string;
+  outcome_summary?: string;
+  started_at: string;
+  ended_at: string;
+  total_tokens: number;
+  total_cost_usd: number;
+  step_count: number;
+  error_count: number;
+};
+
+export type RunStep = {
+  step_id: string;
+  run_id: string;
+  trace_id?: string;
+  span_id?: string;
+  ts: string;
+  step_type: string;
+  name: string;
+  status?: string;
+  duration_ms: number;
+  tokens: number;
+  cost_usd: number;
+  attrs: Record<string, unknown>;
+  body: unknown;
+};
+
+export type RunList = {
+  runs: RunSummary[];
+  page: number;
+  limit: number;
+  total: number;
+  sync: SyncStatus;
+};
+
+export type RunDetail = {
+  run: RunSummary;
+  steps: RunStep[];
 };
 
 type ProjectCreateResponse = {
@@ -221,6 +275,15 @@ export function getTraces(params: Record<string, string>) {
 export function getStats(params: Record<string, string>) {
   const query = new URLSearchParams(params);
   return request<StatsSummary>(`/api/stats?${query.toString()}`);
+}
+
+export function getRuns(params: Record<string, string>) {
+  const query = new URLSearchParams(params);
+  return request<RunList>(`/api/runs?${query.toString()}`);
+}
+
+export function getRun(runId: string) {
+  return request<RunDetail>(`/api/runs/${encodeURIComponent(runId)}`);
 }
 
 export function getHealth() {

@@ -87,8 +87,40 @@ func TestApplyEventCanPreserveEmails(t *testing.T) {
 	}
 }
 
-func testEvent(t *testing.T, attrs any, body any) *event.StoredEvent {
-	t.Helper()
+func TestApplyEventPreservesFilesystemPaths(t *testing.T) {
+	redactor := New(DefaultPolicy())
+	path := "/Users/madara/aiprojects/vigil/logchef-ref"
+	ev := testEvent(t, map[string]any{
+		"run": map[string]any{"repo": path, "worktree": path, "cwd": path},
+	}, nil)
+
+	result := redactor.ApplyEvent(ev)
+	if result.Values != 0 {
+		t.Fatalf("expected filesystem paths preserved, got %+v", result)
+	}
+	attrs := decodeRaw(t, ev.Attrs)
+	run := attrs["run"].(map[string]any)
+	if run["repo"] != path || run["worktree"] != path || run["cwd"] != path {
+		t.Fatalf("expected paths preserved, got %v", run)
+	}
+}
+
+func TestApplyEventStillRedactsHighEntropySecrets(t *testing.T) {
+	redactor := New(DefaultPolicy())
+	secret := "j8Kd9Lm2Np4Qr7St1Uv5Wx8Yz0Ab3Cd6Ef9Gh2Jk"
+	ev := testEvent(t, map[string]any{"value": secret}, nil)
+
+	result := redactor.ApplyEvent(ev)
+	if result.Values < 1 {
+		t.Fatalf("expected high-entropy secret redacted, got %+v", result)
+	}
+	attrs := decodeRaw(t, ev.Attrs)
+	if attrs["value"] != Replacement {
+		t.Fatalf("expected secret redacted, got %v", attrs["value"])
+	}
+}
+
+func testEvent(t *testing.T, attrs any, body any) *event.StoredEvent {	t.Helper()
 	rawAttrs, err := json.Marshal(attrs)
 	if err != nil {
 		t.Fatalf("marshal attrs: %v", err)

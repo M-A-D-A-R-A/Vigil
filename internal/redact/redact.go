@@ -203,6 +203,9 @@ func looksHighEntropySecret(value string) bool {
 	if len(value) < 40 || strings.ContainsAny(value, " \t\r\n") {
 		return false
 	}
+	if looksLikeFilesystemPath(value) {
+		return false
+	}
 
 	classes := 0
 	if lowercasePattern.MatchString(value) {
@@ -218,6 +221,20 @@ func looksHighEntropySecret(value string) bool {
 		classes++
 	}
 	return classes >= 3
+}
+
+// looksLikeFilesystemPath reports whether a value is an absolute, relative, or
+// Windows drive path. Absolute paths are frequently long, mixed-case strings
+// with separators, so the generic high-entropy heuristic would otherwise
+// redact values such as repository roots and working directories.
+func looksLikeFilesystemPath(value string) bool {
+	if strings.HasPrefix(value, "/") || strings.HasPrefix(value, "./") || strings.HasPrefix(value, "../") || strings.HasPrefix(value, "~/") {
+		return true
+	}
+	if len(value) >= 3 && value[1] == ':' && (value[2] == '\\' || value[2] == '/') {
+		return true
+	}
+	return false
 }
 
 var sensitiveKeys = map[string]bool{

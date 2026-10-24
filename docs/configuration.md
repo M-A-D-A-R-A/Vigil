@@ -16,6 +16,27 @@
 - `VIGIL_REDACTION_MAX_STRING_LENGTH` - max characters inspected per string, defaults to `8192`
 - `VIGIL_CONFIG_PATH` - optional `vigil` CLI config file path override
 
+## Agent producers
+
+Agent producers resolve their target in this order:
+
+1. process environment (`VIGIL_BASE_URL`, `VIGIL_PROJECT_ID`, `VIGIL_INGEST_KEY`)
+2. nearest `.env` walking up from the working directory
+3. the global `vigil init` / `vigil use` config
+
+So a folder with its own `.env` binds its producers to that project, and everything else falls back to the global project.
+
+The Pi producer also supports these variables:
+
+- `VIGIL_AGENT_DISABLED` - disable the Pi producer, defaults to `false`
+- `VIGIL_SOURCE` - run source label, defaults to `pi`
+- `VIGIL_CAPTURE_THINKING` - capture model reasoning, defaults to `true`
+- `VIGIL_CAPTURE_TEXT` - capture model text/plans, defaults to `true`
+- `VIGIL_CAPTURE_TOOL_ARGS` - capture tool arguments, defaults to `true`
+- `VIGIL_CAPTURE_TOOL_OUTPUT` - capture truncated tool output, defaults to `false`
+
+See [Agent Traces](agent-traces.md).
+
 ## Redaction behavior
 
 Redaction runs before Vigil writes raw NDJSON, so obvious secrets do not become part of the source of truth. The first pass redacts sensitive key names such as `password`, `token`, `secret`, `api_key`, `authorization`, `cookie`, `access_token`, and `refresh_token`; it also redacts common secret-looking values such as bearer tokens, JWTs, provider-style API keys, connection strings with credentials, high-entropy strings, and emails when email redaction is enabled.

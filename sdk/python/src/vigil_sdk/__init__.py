@@ -1,3 +1,4 @@
+from .agent import AgentRun
 from .client import (
     IngestResult,
     NoopVigilClient,
@@ -17,6 +18,7 @@ from .client import (
 from .otel import VigilOTelConfig, VigilOTelError, build_vigil_otel_env, configure_vigil_otel
 
 __all__ = [
+    "AgentRun",
     "IngestResult",
     "NoopVigilClient",
     "ProjectResult",
